@@ -1,0 +1,19 @@
+{
+  "name": "pi-mentor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "User-directed learning workflow for Pi",
+  "keywords": ["pi-package"],
+  "pi": { "extensions": ["./index.ts"] },
+  "scripts": { "typecheck": "tsc --noEmit", "test": "node --experimental-strip-types --test tests/*.test.ts" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "@earendil-works/pi-tui": "*", "typebox": "*" },
+  "devDependencies": { "@earendil-works/pi-coding-agent": "1.0.4", "@earendil-works/pi-tui": "1.0.4", "@types/node": "^24.0.0", "typebox": "1.3.27", "typescript": "^5.9.3" },
+  "overrides": {
+    "@earendil-works/pi-agent-core": "1.0.4",
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-codemode": "1.0.4",
+    "@earendil-works/pi-mcp": "1.0.4",
+    "@earendil-works/chord": "1.0.4"
+  }
+}
