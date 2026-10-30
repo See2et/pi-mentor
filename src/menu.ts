@@ -4,6 +4,7 @@ import { DECISIONS, HINTS, INNER, WHOLE, concerns, currentRevision, details, hin
 import { ContractSchema, KINDS, UNIT_PHASES, UNIT_DECISIONS, contractText, unitById, unitDetails, unitRevision, type Contract, type Observation, type Unit } from './units.ts';
 import { Value } from 'typebox/value';
 import { inspect } from './viewer.ts';
+import { selectMenu, confirmMenu } from './navigation.ts';
 
 export interface MenuOwner {
   state(): State;
@@ -54,7 +55,7 @@ export async function mentorMenu(args: string, ctx: ExtensionCommandContext, own
   const s = owner.state();
   const observation = owner.observation();
   const select = async <T extends string>(title: string, choices: Partial<Record<T, string>>): Promise<T | undefined> => {
-    const value = await ctx.ui.select(title, Object.values(choices).filter((v): v is string => typeof v === 'string'));
+    const value = await selectMenu(ctx, title, Object.values(choices).filter((v): v is string => typeof v === 'string'));
     owner.check(token);
     return (Object.keys(choices) as T[]).find(k => choices[k] === value);
   };
@@ -62,7 +63,7 @@ export async function mentorMenu(args: string, ctx: ExtensionCommandContext, own
     const value = await ctx.ui.editor(title, prefill); owner.check(token); return value;
   };
   const confirm = async (title: string, text: string) => {
-    const yes = await ctx.ui.confirm(title, text); owner.check(token); return yes;
+    const yes = await confirmMenu(ctx, title, text); owner.check(token); return yes;
   };
   const read = async (title: string, text: string) => {
     const result = await inspect(ctx, title, text); owner.check(token); return result;

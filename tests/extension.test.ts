@@ -31,7 +31,29 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd()) {
         ui: {
           select: async (title: string, options: string[]) => { h.menus.push({ title, options }); return h.choices.shift(); },
           custom: async (factory: Handler) => {
-            const component = factory({ terminal: { rows: 28 }, requestRender() {} }, { fg: (_t: string, x: string) => x }, {}, () => {});
+            let result: unknown;
+            const component = factory({ terminal: { rows: 28 }, requestRender() {} }, { fg: (_t: string, x: string) => x }, {}, (value: unknown) => { result = value; });
+            const screen: string[] = component.render(10000);
+            if (screen.some(line => line.startsWith('→ '))) {
+              // Drive the real menu through keyboard input, including off-screen options.
+              const options: string[] = [];
+              for (;;) {
+                const label = (component.render(10000) as string[]).find(line => line.startsWith('→ '))!.slice(2);
+                if (options.includes(label)) break;
+                options.push(label);
+                component.handleInput('k');
+              }
+              const confirmation = options.join('/') === 'Yes/No';
+              if (!confirmation) h.menus.push({ title: screen[0], options });
+              const choice = confirmation ? (h.confirmations.shift() ? 'Yes' : 'No') : h.choices.shift();
+              if (choice === undefined) component.handleInput('\x1b');
+              else {
+                assert.ok(options.includes(choice), `Menu does not contain ${choice}: ${options}`);
+                for (let n = 0; n < options.indexOf(choice); n++) component.handleInput('k');
+                component.handleInput('\r');
+              }
+              return result;
+            }
             h.inspections.push(component.render(36));
             return h.cardResults.length ? h.cardResults.shift() : h.inspector ? h.inspector() : h.inspectResults.shift() ?? true;
           },
@@ -406,6 +428,24 @@ test('guided cancellation/chat and stale state/source/session dialogs never appl
     assert.equal((await h.status()).record.goal, '');
     assert.match(h.notices.at(-1)!, /session changed/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('guided entry, alternatives and topic menus use keyboard selection without consuming editor text', async () => {
+  const h = harness();
+  await h.emit('session_start');
+  h.choices.push('Mentor を開始・再開');
+  await h.command();
+  assert.equal((await h.status()).record.enabled, true);
+  h.edits.push('j/k を文字として保持');
+  await h.command('goal');
+  assert.equal((await h.status()).record.goal, 'j/k を文字として保持');
+  h.edits.push('入力検証'); await h.command('add');
+  h.cardResults.push('other', 'continue');
+  h.choices.push('別の論点・作業の相談に戻る…', '論点 1: 入力検証');
+  await h.command();
+  assert.ok(h.menus.some(m => m.title.startsWith('その他')));
+  assert.ok(h.menus.some(m => m.title.startsWith('戻る相談')));
+  assert.equal((await h.status()).record.activeIssue, null, 'selecting a topic prepares a card, not a state change');
 });
 
 test('legacy contextual menu remains available only as an explicit advanced shortcut', async () => {

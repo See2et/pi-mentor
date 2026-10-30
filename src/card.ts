@@ -1,5 +1,6 @@
 import type { ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
+import { menuDirection, selectMenu } from './navigation.ts';
 
 export type CardChoice = 'continue' | 'edge' | 'other';
 export const plain = (text: string) => text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
@@ -7,7 +8,7 @@ export async function actionCard(ctx: ExtensionCommandContext, title: string, bo
   const options: [CardChoice, string][] = [['continue', '議論を続ける（変更なし）'], ['edge', action], ['other', 'その他…']];
   if (ctx.mode !== 'tui') {
     if (await ctx.ui.editor(`${title}（閲覧のみ。保存で選択へ／Esc取消）`, body) === undefined) return;
-    const selected = await ctx.ui.select(title, options.map(([, label]) => label));
+    const selected = await selectMenu(ctx, title, options.map(([, label]) => label));
     return options.find(([, label]) => label === selected)?.[0];
   }
   return ctx.ui.custom<CardChoice | undefined>((tui, theme, _keys, done) => {
@@ -26,15 +27,15 @@ export async function actionCard(ctx: ExtensionCommandContext, title: string, bo
           ...lines.slice(top, top + page),
           theme.fg('muted', truncateToWidth(`詳細 ${top + 1}–${Math.min(top + page, count)}/${count} · PgUp/Dn Home/End`, width)),
           ...footer,
-          theme.fg('muted', truncateToWidth('↑↓: 選択 / Enter: 実行 / Esc: 閉じる', width)),
+          theme.fg('muted', truncateToWidth('↑/j: 上 / ↓/k: 下 / Enter: 実行 / Esc: 閉じる', width)),
         ];
       },
       invalidate() {},
       handleInput(data: string) {
         if (matchesKey(data, Key.escape)) { done(undefined); return; }
         if (matchesKey(data, Key.enter)) { done(options[selected][0]); return; }
-        if (matchesKey(data, Key.up)) selected = (selected + options.length - 1) % options.length;
-        if (matchesKey(data, Key.down) || matchesKey(data, Key.tab)) selected = (selected + 1) % options.length;
+        const direction = menuDirection(data) || (matchesKey(data, Key.tab) ? 1 : 0);
+        if (direction) selected = (selected + direction + options.length) % options.length;
         if (matchesKey(data, Key.pageUp)) { pinnedEnd = false; top = Math.max(0, top - page); }
         if (matchesKey(data, Key.pageDown)) { pinnedEnd = false; top = Math.min(Math.max(0, count - page), top + page); }
         if (matchesKey(data, Key.home)) { pinnedEnd = false; top = 0; }

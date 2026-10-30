@@ -5,6 +5,7 @@ import { actionMeaning, activeIssue, activeUnit, currentNext, exactArtifact, tra
 import type { Edge, Next } from './guided-schema.ts';
 import { mentorMenu, type MenuOwner } from './menu.ts';
 import { inspect } from './viewer.ts';
+import { selectMenu } from './navigation.ts';
 
 export interface GuidedOwner extends MenuOwner { edge(proposal: Next, token: string): void }
 export async function guidedMenu(ctx: ExtensionCommandContext, owner: GuidedOwner): Promise<void> {
@@ -17,7 +18,7 @@ export async function guidedMenu(ctx: ExtensionCommandContext, owner: GuidedOwne
   const token = owner.token(), s = owner.state(), o = owner.observation();
   if (owner.error()) { await mentorMenu('', ctx, owner); return; }
   const choose = async (title: string, entries: [string, string][]) => {
-    const value = await ctx.ui.select(title, entries.map(([, label]) => label));
+    const value = await selectMenu(ctx, title, entries.map(([, label]) => label));
     owner.check(token);
     return entries.find(([, label]) => value === label)?.[0];
   };
