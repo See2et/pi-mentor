@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { SessionManager, type ExtensionAPI, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import mentorExtension from '../index.ts';
-import { location } from '../src/domain.ts';
+import { currentJudgment, location } from '../src/domain.ts';
 import { unitJudgment, evidenceFreshness } from '../src/units.ts';
 
 type Handler = (...args: any[]) => any;
@@ -20,7 +20,8 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd()) {
     choices: [] as (string | undefined)[], edits: [] as (string | undefined)[], confirmations: [] as boolean[],
     notices: [] as string[], requests: [] as string[],
     menus: [] as { title: string; options: string[] }[], inspections: [] as string[][],
-    inspectResults: [] as boolean[], inspector: undefined as (() => Promise<boolean>) | undefined,
+    cardResults: [] as string[],
+    inspectResults: [] as boolean[], inspector: undefined as (() => Promise<any>) | undefined,
     widget: undefined as Handler | undefined,
     editor: undefined as (() => Promise<string | undefined>) | undefined,
     async emit(name: string, event: object = {}) { return events.get(name)!({ type: name, ...event }, h.ctx()); },
@@ -32,7 +33,7 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd()) {
           custom: async (factory: Handler) => {
             const component = factory({ terminal: { rows: 28 }, requestRender() {} }, { fg: (_t: string, x: string) => x }, {}, () => {});
             h.inspections.push(component.render(36));
-            return h.inspector ? h.inspector() : h.inspectResults.shift() ?? true;
+            return h.cardResults.length ? h.cardResults.shift() : h.inspector ? h.inspector() : h.inspectResults.shift() ?? true;
           },
           editor: () => h.editor ? h.editor() : Promise.resolve(h.edits.shift()),
           confirm: async () => h.confirmations.shift() ?? false,
@@ -45,6 +46,10 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd()) {
     async status() { return (await tools.get('mentor_status').execute('s', {}, undefined, undefined, h.ctx())).details; },
     async record(action: object, expectedSnapshot?: string) {
       return tools.get('mentor_record').execute('r', { expectedSnapshot: expectedSnapshot ?? (await h.status()).snapshot, action }, undefined, undefined, h.ctx());
+    },
+    async next(proposal: object, expectedSnapshot?: string) {
+      assert.ok(tools.get('mentor_next'), 'AI can prepare one next-action card without advancing');
+      return tools.get('mentor_next').execute('n', { expectedSnapshot: expectedSnapshot ?? (await h.status()).snapshot, proposal }, undefined, undefined, h.ctx());
     },
     render(width: number): string[] { return h.widget!({}, { fg: (_token: string, text: string) => text }).render(width); },
   };
@@ -108,7 +113,7 @@ test('menu and tools support grounded critique, human defense, AI retraction, ex
   state = (await h.status()).record;
   assert.equal(state.issues[0].currentRevision, 2);
   assert.equal(state.issues[0].judgments[0].revision, 1);
-  assert.ok(h.render(80).join('\n').includes('未判断'));
+  assert.equal(currentJudgment(state.issues[0]), undefined);
   assert.equal(h.requests.length, 0);
 });
 
@@ -171,10 +176,10 @@ test('active branch restoration excludes abandoned data and keeps widget and con
   const context = (await h.emit('context', { messages: [{ role: 'custom', customType: 'mentor-display', content: 'old view' }] })).messages;
   assert.equal(context.length, 1);
   for (const line of location(status.record)) assert.ok(context[0].content.includes(line));
-  assert.ok(h.render(100).join('\n').includes('全体目標・制約'));
+  assert.ok(h.render(100).join('\n').includes('目標と制約を整理する'));
   for (const width of [16, 32, 80, 120]) {
     for (const line of h.render(width)) assert.ok(visibleWidth(line) <= width, `${width}: ${line}`);
-    assert.match(h.render(width).join('\n'), /r1/);
+    assert.ok(!h.render(width).join('\n').includes('r1'), 'normal widget does not expose internal revision management');
   }
 });
 
@@ -313,12 +318,102 @@ test('actual source changes invalidate evidence/acceptance, reject stale model s
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('contextual main menus separate records/navigation, named transitions, and back/cancel without mutation', async () => {
+test('guided card prepares without authority; one chosen edge bundles exact records and progress', async () => {
+  const h = harness();
+  await h.emit('session_start'); await h.command('resume');
+  const offer = async (edge: object) => {
+    const before = (await h.status()).record;
+    const result = await h.next({ summary: '会話から整理した候補', unresolved: '実環境の挙動は未確認', edge });
+    assert.equal(result.isError, undefined, JSON.stringify(result.details));
+    const after = (await h.status()).record;
+    assert.equal(after.whole, before.whole);
+    assert.equal(after.activeIssue, before.activeIssue);
+    assert.deepEqual(after.issues, before.issues);
+    assert.deepEqual(after.units, before.units);
+    const count = h.manager.getEntries().length;
+    h.cardResults.push('edge'); await h.command();
+    assert.equal(h.manager.getEntries().length, count + 1, 'one atomic state entry per edge');
+    assert.equal(h.requests.length, 0, 'choosing an edge does not force inference');
+  };
+  await offer({ type: 'goals', goal: '安全な入力を設計する', constraints: 'API維持' });
+  await offer({ type: 'issue', text: '入力検証' });
+  assert.equal((await h.status()).record.issues[0].currentRevision, null);
+  await offer({ type: 'critique', text: '境界で入力を検証する' });
+  let s = (await h.status()).record;
+  assert.equal(s.issues[0].inner, 'critique');
+  assert.equal(s.issues[0].revisions[0].text, '境界で入力を検証する');
+  assert.equal(s.issues[0].judgments.length, 0, 'review target is not adoption');
+  await offer({ type: 'decide' });
+  await offer({ type: 'adopt', note: '境界を明示する' });
+  s = (await h.status()).record;
+  assert.equal(s.issues[0].judgments[0].decision, 'adopt');
+  assert.equal(s.whole, 'implementation');
+  assert.equal(s.units.length, 0, 'direction is not implementation authorization');
+  await offer({ type: 'start', contract: unitContract });
+  s = (await h.status()).record;
+  assert.equal(s.units[0].phase, 'implementing');
+  assert.deepEqual(s.units[0].revisions[0].contract, unitContract);
+  await offer({ type: 'inspect' });
+  assert.equal((await h.status()).record.units[0].phase, 'examination');
+  await offer({ type: 'accept', note: '証拠未提出と本番未確認を留保' });
+  s = (await h.status()).record;
+  assert.equal(s.units[0].judgments.at(-1).decision, 'accept');
+  assert.equal(s.units[0].judgments.at(-1).source.hash, (await h.status()).sourceObservation.source.hash);
+  assert.deepEqual(s.units[0].judgments.at(-1).evidenceIds, []);
+  assert.equal(s.activeUnit, 1, 'acceptance never starts a next unit');
+  await offer({ type: 'review' });
+  await offer({ type: 'finish' });
+  assert.equal((await h.status()).record.enabled, false);
+});
+
+test('guided cancellation/chat and stale state/source/session dialogs never apply or partially register an edge', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mentor-card-'));
+  try {
+    execFileSync('git', ['-C', dir, 'init', '-q']);
+    writeFileSync(join(dir, 'code.ts'), 'before');
+    execFileSync('git', ['-C', dir, 'add', '.']);
+    const h = harness(SessionManager.inMemory(), dir);
+    await h.emit('session_start'); await h.command('resume');
+    const p = { summary: '目標を整理', unresolved: '本番未確認', edge: { type: 'goals', goal: '安全な入力', constraints: 'API維持' } };
+    await h.next(p);
+    const before = (await h.status()).record;
+    const count = h.manager.getEntries().length;
+    h.cardResults.push('continue'); await h.command();
+    await h.emit('context', { messages: [{ role: 'user', content: 'OK、質問がある', timestamp: 1 }] });
+    await h.emit('agent_end');
+    assert.deepEqual((await h.status()).record, before);
+    assert.equal(h.manager.getEntries().length, count);
+    assert.equal(h.requests.length, 0);
+    let resolve!: (value: string | undefined) => void;
+    h.inspector = () => new Promise(done => { resolve = done; });
+    let dialog = h.command();
+    writeFileSync(join(dir, 'code.ts'), 'changed while card open');
+    resolve('edge'); await dialog;
+    assert.deepEqual((await h.status()).record, before);
+    assert.match(h.notices.at(-1)!, /state changed/);
+    await h.next(p);
+    dialog = h.command();
+    await h.record({ type: 'proposal', text: '候補後の別記録' });
+    resolve('edge'); await dialog;
+    assert.equal((await h.status()).record.goal, '');
+    assert.match(h.notices.at(-1)!, /state changed/);
+    await h.next(p);
+    dialog = h.command();
+    h.manager = SessionManager.inMemory();
+    await h.emit('session_start');
+    resolve('edge'); await dialog;
+    assert.equal(h.manager.getEntries().length, 0);
+    assert.equal((await h.status()).record.goal, '');
+    assert.match(h.notices.at(-1)!, /session changed/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('legacy contextual menu remains available only as an explicit advanced shortcut', async () => {
   const h = await prepared();
   h.choices.push('論点の検討', '仮説形成'); await h.command('phase');
   const before = (await h.status()).record;
   h.choices.push('仮説を作成・改訂…', '戻る', '記録を見る…', '戻る', '移動・その他…', '全体の移動先を選ぶ…', '戻る（変更なし）', '戻る', '閉じる（変更なし）');
-  await h.command();
+  await h.command('advanced');
   assert.deepEqual((await h.status()).record, before);
   const main = h.menus.findLast(m => m.options.includes('仮説を作成・改訂…'))!;
   assert.equal(main.options[0], '閉じる（変更なし）');
@@ -328,8 +423,8 @@ test('contextual main menus separate records/navigation, named transitions, and 
   assert.ok(!main.options.includes('制約を編集'));
   assert.ok(!main.options.includes('現在の仮説を判断する'));
   assert.ok(main.options.length <= 8);
-  h.choices.push('批判・弁護へ移る'); await h.command();
+  h.choices.push('批判・弁護へ移る'); await h.command('advanced');
   assert.equal((await h.status()).record.issues[0].inner, 'critique');
-  await h.command();
+  await h.command('advanced');
   assert.ok(h.menus.at(-1)!.options.includes('仮説の判断へ移る'));
 });

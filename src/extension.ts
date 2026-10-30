@@ -3,6 +3,9 @@ import { Text } from '@earendil-works/pi-tui';
 import { Type } from 'typebox';
 import { ModelActionSchema, StateSchema, applyModel, applyUser, compactRecord, initialState, mentorContext, restore, type State, type UserAction } from './domain.ts';
 import { mentorMenu } from './menu.ts';
+import { guidedMenu, type GuidedOwner } from './guided-menu.ts';
+import { sourceIdentity, proposeNext, transition } from './guided.ts';
+import { NextSchema } from './guided-schema.ts';
 import { widgetLines } from './presentation.ts';
 import { observeSource } from './source.ts';
 import type { Observation } from './units.ts';
@@ -14,7 +17,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
   let epoch = 0;
   let observation: Observation = { checkedAt: '', error: 'Not checked yet' };
   const inFlight = new Set<string>();
-  const token = () => `${sessionId}/${epoch}/${state.sequence}:${observation.source?.hash ?? `unknown:${encodeURIComponent(observation.error ?? '')}`}`;
+  const token = () => `${sessionId}/${epoch}/${state.sequence}:${sourceIdentity(observation)}`;
   const refresh = (ctx: ExtensionContext) => {
     checkContext(ctx);
     observation = inFlight.size ? { checkedAt: new Date().toISOString(), error: 'Pi tool activity in flight; source freshness cannot be established.' } : observeSource(ctx.cwd ?? process.cwd());
@@ -79,18 +82,22 @@ export default function mentorExtension(pi: ExtensionAPI): void {
 
   pi.registerMessageRenderer('mentor-display', message => new Text(typeof message.content === 'string' ? message.content : '', 0, 0));
   pi.registerCommand('mentor', {
-    description: 'Mentor: 本人操作のメニュー / status / pause / resume / hint',
+    description: 'Mentor: 現在の相談と次の一手 / status / pause / resume / hint',
     handler: async (args, ctx) => {
       if (!ctx.hasUI) { ctx.ui.notify('/mentor requires interactive or dialog-capable RPC mode.', 'error'); return; }
       try {
         checkContext(ctx);
         refresh(ctx); paint(ctx);
-        await mentorMenu(args, ctx, {
+        const owner: GuidedOwner = {
           state: () => structuredClone(state), observation: () => structuredClone(observation), error: () => error, token,
           check: expected => check(expected, ctx, true),
           user: (action: UserAction, expected: string) => {
             check(expected, ctx);
             persist(applyUser(state, action, observation), ctx);
+          },
+          edge: (proposal, expected) => {
+            check(expected, ctx);
+            persist(transition(state, proposal, observation), ctx);
           },
           reset: expected => {
             check(expected, ctx, true);
@@ -105,7 +112,9 @@ export default function mentorExtension(pi: ExtensionAPI): void {
             if (!ctx.isIdle()) throw new Error('Pi is busy; request the hint/discussion again after the current response.');
             pi.sendUserMessage(text, { expandPromptTemplates: false });
           },
-        });
+        };
+        if (!args.trim()) await guidedMenu(ctx, owner);
+        else await mentorMenu(args.trim() === 'advanced' ? '' : args, ctx, owner);
       } catch (failure) {
         ctx.ui.notify(failure instanceof Error ? failure.message : String(failure), 'error');
       }
@@ -128,6 +137,24 @@ export default function mentorExtension(pi: ExtensionAPI): void {
       refresh(ctx); paint(ctx);
       const data = result(true);
       return { content: [{ type: 'text', text: JSON.stringify(data) }], details: data, structuredContent: JSON.parse(JSON.stringify(data)) };
+    },
+  });
+  pi.registerTool({
+    name: 'mentor_next', label: 'Mentor next-action draft',
+    description: 'Prepare ONE current-artifact/next-action card from the conversation. Does NOT select an edge, change phase, adopt, authorize implementation or accept anything. Call after recording critiques/evidence: later state or source changes make the card stale. Provide a concise summary, unresolved matters and the exact typed edge payload. Only the user can apply it through /mentor; all necessary records and movement commit atomically. goals stores goal+constraints; issue creates/selects an exact issue; critique text sets the exact review target (not adoption); decide opens the direction discussion; adopt records provisional adoption and opens scope discussion (not implementation); scope records a new feature/experiment scope without starting; start confirms the exact contract and explicitly starts ONLY that unit; inspect stops implementation for inspection; accept binds the displayed contract/source/evidence/limitations; correct explicitly restarts implementation within the current contract; design/revise/defer/review/finish are explicit loops or whole review. Use scope for experiments without inferring design adoption. No free-form action labels, user actions, automatic transitions or grading. Require the latest snapshot.',
+    parameters: Type.Object({ expectedSnapshot: Type.String(), proposal: NextSchema }, { additionalProperties: false }),
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    async execute(_id, params, signal, _update, ctx) {
+      try {
+        if (signal?.aborted) throw new Error('Mentor next-action draft cancelled.');
+        check(params.expectedSnapshot, ctx);
+        persist(proposeNext(state, params.proposal, observation), ctx);
+        const data = result();
+        return { content: [{ type: 'text', text: JSON.stringify(data) }], details: data, structuredContent: JSON.parse(JSON.stringify(data)) };
+      } catch (failure) {
+        const data = { ...result(), operationError: failure instanceof Error ? failure.message : String(failure) };
+        return { content: [{ type: 'text', text: JSON.stringify(data) }], details: data, structuredContent: JSON.parse(JSON.stringify(data)), isError: true };
+      }
     },
   });
   pi.registerTool({
