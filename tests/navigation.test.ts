@@ -14,7 +14,7 @@ function dialog<T>(open: (ctx: ExtensionCommandContext) => Promise<T>) {
   return { result, render: (width = 50) => component.render(width), key: (data: string) => component.handleInput(data), resize: (height: number) => { rows = height; } };
 }
 
-for (const [up, down] of [['\x1b[A', '\x1b[B'], ['j', 'k'], ['\x1b[106u', '\x1b[107u']]) {
+for (const [up, down] of [['\x1b[A', '\x1b[B'], ['k', 'j'], ['\x1b[107u', '\x1b[106u']]) {
   test(`selection wraps in both directions with ${JSON.stringify([up, down])}`, async () => {
     const d = dialog(ctx => selectMenu(ctx, 'Choose', ['first', 'middle', 'last']));
     d.render();
@@ -41,7 +41,7 @@ for (const [up, down] of [['\x1b[A', '\x1b[B'], ['j', 'k'], ['\x1b[106u', '\x1b[
 
 test('long selection stays visible after wrapping and resizing; cancel has no selection', async () => {
   const d = dialog(ctx => selectMenu(ctx, '選択\n二行の題名', Array.from({ length: 30 }, (_, n) => `item-${n}`)));
-  d.render(); d.key('j');
+  d.render(); d.key('k');
   for (const width of [16, 36]) {
     d.resize(9);
     const lines = d.render(width);

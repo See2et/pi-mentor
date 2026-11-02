@@ -1,10 +1,9 @@
 import type { ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { Key, matchesKey, SelectList, truncateToWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
 
-// The requested mapping is j = up, k = down (not Vim's default mapping).
 export function menuDirection(data: string): -1 | 0 | 1 {
-  if (matchesKey(data, Key.up) || matchesKey(data, 'j')) return -1;
-  if (matchesKey(data, Key.down) || matchesKey(data, 'k')) return 1;
+  if (matchesKey(data, Key.up) || matchesKey(data, 'k')) return -1;
+  if (matchesKey(data, Key.down) || matchesKey(data, 'j')) return 1;
   return 0;
 }
 
@@ -37,7 +36,7 @@ export async function selectMenu(ctx: ExtensionCommandContext, title: string, op
         return [
           ...header.map(line => theme.fg('accent', line)),
           ...list.render(width).map(line => truncateToWidth(line, width)),
-          theme.fg('muted', truncateToWidth('↑/j: 上 / ↓/k: 下 / Enter: 決定 / Esc: 取消', width)),
+          theme.fg('muted', truncateToWidth('↑/k: 上 / ↓/j: 下 / Enter: 決定 / Esc: 取消', width)),
         ];
       },
       invalidate() { list.invalidate(); },

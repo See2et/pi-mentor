@@ -35,7 +35,7 @@ export async function actionCard(ctx: ExtensionContext, title: string, body: str
           ...lines.slice(top, top + page),
           theme.fg('muted', truncateToWidth(`詳細 ${top + 1}–${Math.min(top + page, count)}/${count} · PgUp/Dn Home/End`, width)),
           ...footer,
-          theme.fg('muted', truncateToWidth('↑/j: 上 / ↓/k: 下 / Enter: 実行 / Esc: 閉じる', width)),
+          theme.fg('muted', truncateToWidth('↑/k: 上 / ↓/j: 下 / Enter: 実行 / Esc: 閉じる', width)),
         ];
       },
       invalidate() {},
