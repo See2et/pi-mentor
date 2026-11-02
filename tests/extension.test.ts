@@ -9,7 +9,7 @@ import { visibleWidth } from '@earendil-works/pi-tui';
 import mentorExtension from '../index.ts';
 import { currentJudgment, location, initialState, applyUser, applyModel, mentorContext, GUIDANCE } from '../src/domain.ts';
 import { unitJudgment, evidenceFreshness } from '../src/units.ts';
-import { defaultPiDefinitions, defaultPiToolNames, piLoadout } from './pi-loadout.ts';
+import { defaultPiDefinitions, defaultPiToolNames, piLoadout, loadoutSize } from './pi-loadout.ts';
 
 type Handler = (...args: any[]) => any;
 function harness(manager = SessionManager.inMemory(), cwd = process.cwd(), runtimeLoadout = false) {
@@ -236,6 +236,24 @@ test('pause and restored sessions remove direct Mentor tools without changing un
   assert.deepEqual(direct(), []);
   await h.command('resume');
   assert.deepEqual(h.activeTools.filter(n => !n.startsWith('mentor_')), ['unrelated_extension_tool', 'codemode', 'another_extension_tool']);
+});
+
+test('generated Pi loadout budgets include codemode catalog and all exposed declarations', async t => {
+  const h = harness(SessionManager.inMemory(), process.cwd(), true);
+  const measurements: Record<string, ReturnType<typeof loadoutSize>> = {};
+  for (const [phase, command] of [['startup', undefined], ['enabled', 'resume'], ['paused', 'pause']] as const) {
+    if (command) await h.command(command);
+    else await h.emit('session_start');
+    const loadout = piLoadout(h.tools, h.activeTools);
+    const size = loadoutSize(loadout);
+    measurements[phase] = size;
+    const catalog = loadout.declared.find(tool => tool.name === 'codemode')?.description ?? '';
+    assert.ok(catalog.includes('## mentor') && catalog.includes('mentor_status'), 'measure the generated Mentor namespace, not the registration placeholder');
+    assert.ok(catalog.includes('expectedSnapshot') && catalog.includes('snapshot'), 'generated catalog includes input/output declarations');
+    assert.ok(size.codemodeDescriptionChars > 1500 && size.codemodeDescriptionChars < 7500, `${phase} catalog: ${size.codemodeDescriptionChars} chars`);
+    assert.ok(size.declarationChars < (phase === 'enabled' ? 19000 : 11000), `${phase} complete declaration set: ${size.declarationChars} chars`);
+  }
+  t.diagnostic(JSON.stringify({ fixture: 'Pi 1.0.4 defaults; mode on, default 3000-estimated-token inline budget, models enabled, no MCP/other extensions; characters, not tokens', measurements }));
 });
 
 test('default Pi loadout exposes codemode to reach status through startup, pause and resume, never scripting approval', async () => {
