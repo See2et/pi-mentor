@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Text } from '@earendil-works/pi-tui';
 import { Type } from 'typebox';
-import { DiscussionActionSchema, applyDiscussion, ModelActionSchema, StateSchema, applyModel, applyUser, compactRecord, initialState, mentorContext, restore, type ModelAction, type State, type UserAction } from './domain.ts';
+import { DiscussionActionSchema, applyDiscussion, ModelActionSchema, applyModel, applyUser, initialState, mentorContext, restore, type ModelAction, type State, type UserAction } from './domain.ts';
 import { mentorMenu } from './menu.ts';
 import { guidedMenu, type GuidedOwner } from './guided-menu.ts';
 import { actionMeaning, operationFeedback, exactArtifact, sourceIdentity, proposeNext, transition, workTitle } from './guided.ts';
@@ -10,6 +10,7 @@ import { actionCard } from './card.ts';
 import { widgetLines } from './presentation.ts';
 import { observeSource } from './source.ts';
 import type { Observation } from './units.ts';
+import { StatusSchema, statusView } from './status.ts';
 
 export default function mentorExtension(pi: ExtensionAPI): void {
   let state = initialState();
@@ -163,15 +164,20 @@ export default function mentorExtension(pi: ExtensionAPI): void {
   };
   pi.registerTool({
     name: 'mentor_status', label: 'Mentor status', exposure: 'codemode', namespace,
-    description: 'Read active-branch records, source observation and latest snapshot. Read-only; works while paused. Human decisions require /mentor or native mentor_assist approval, never chat assent.',
-    parameters: Type.Object({}, { additionalProperties: false }),
-    outputSchema: Type.Object({ snapshot: Type.String(), paused: Type.Boolean(), error: Type.Optional(Type.String()), sourceObservation: Type.Unknown(), record: StateSchema }),
+    description: 'Read current summary (default), complete issue/unit by ID, or explicit full branch history. Includes omissions/recovery, exact source observation and latest snapshot. Read-only; works while paused. Human decisions require /mentor or native approval, never chat assent.',
+    parameters: StatusSchema,
+    outputSchema: Type.Object({ snapshot: Type.String(), paused: Type.Boolean(), record: Type.Optional(Type.Unknown()), operationError: Type.Optional(Type.String()) }, { additionalProperties: true }),
     annotations: { readOnlyHint: true, openWorldHint: false },
-    async execute(_id, _params, _signal, _update, ctx) {
-      checkContext(ctx);
-      refresh(ctx); paint(ctx);
-      const data = { ...result(), record: state };
-      return { content: [{ type: 'text', text: JSON.stringify(data) }], details: data, structuredContent: JSON.parse(JSON.stringify(data)) };
+    async execute(_id, params, _signal, _update, ctx) {
+      try {
+        checkContext(ctx);
+        refresh(ctx); paint(ctx);
+        const data = { ...result(), ...statusView(state, params, observation) };
+        return { content: [{ type: 'text', text: JSON.stringify(data) }], details: data, structuredContent: JSON.parse(JSON.stringify(data)) };
+      } catch (failure) {
+        const data = { ...result(), operationError: failure instanceof Error ? failure.message : String(failure), recovery: 'Read mentor_status({}) via codemode to discover IDs; use view issue + issueId, unit + unitId, or full.' };
+        return { content: [{ type: 'text', text: JSON.stringify(data) }], details: data, structuredContent: JSON.parse(JSON.stringify(data)), isError: true };
+      }
     },
   });
   pi.registerTool({

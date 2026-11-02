@@ -86,7 +86,7 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd()) {
       } as unknown as ExtensionCommandContext;
     },
     async command(args = '') { await commands.get('mentor').handler(args, h.ctx()); },
-    async status() { return (await tools.get('mentor_status').execute('s', {}, undefined, undefined, h.ctx())).details; },
+    async status(query: object = { view: 'full' }) { return (await tools.get('mentor_status').execute('s', query, undefined, undefined, h.ctx())).details; },
     async record(action: object, expectedSnapshot?: string) {
       return tools.get('mentor_record').execute('r', { expectedSnapshot: expectedSnapshot ?? (await h.status()).snapshot, action }, undefined, undefined, h.ctx());
     },
@@ -148,6 +148,28 @@ test('mutations return deltas and recovery, not repeated record history', async 
   assert.equal(failed.isError, true);
   assert.equal(failed.details.record, undefined);
   assert.ok(failed.details.recovery.includes('mentor_status'));
+});
+
+test('status defaults to an explicit current projection and retrieves complete target histories', async () => {
+  const h = await prepared();
+  await h.record({ type: 'draft', issueId: 1, text: 'new unconfirmed target' });
+  const current = await h.status({});
+  assert.equal(current.view, 'current');
+  assert.ok(current.omitted.length);
+  assert.ok(current.recovery.includes('issueId'));
+  const target = await h.status({ view: 'issue', issueId: 1 });
+  assert.deepEqual(target.record.issue, (await h.status()).record.issues[0]);
+  assert.equal(target.record.issue.revisions.length, 2);
+  const before = h.manager.getEntries().length;
+  for (const query of [{ view: 'issue' }, { view: 'unit' }, { view: 'issue', issueId: 99 }, { view: 'unit', unitId: 99 }, { view: 'current', issueId: 1 }]) {
+    const r = await h.tools.get('mentor_status').execute('s', query, undefined, undefined, h.ctx());
+    assert.equal(r.isError, true);
+    assert.ok(r.details.operationError);
+  }
+  await implementation(h);
+  await h.record({ type: 'unitReport', unitId: 1, revision: 1, text: 'Observed limitations' });
+  assert.deepEqual((await h.status({ view: 'unit', unitId: 1 })).record.unit, (await h.status()).record.units[0]);
+  assert.ok(h.manager.getEntries().length > before);
 });
 
 async function prepared() {
