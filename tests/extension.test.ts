@@ -122,6 +122,20 @@ test('next-card drafting is discoverable through codemode, while native approval
   assert.equal(h.tools.get('mentor_assist').exposure, 'model-only');
 });
 
+test('record and status use discoverable codemode structured results; discussion remains direct', async () => {
+  const h = harness();
+  await h.emit('session_start');
+  for (const name of ['mentor_record', 'mentor_status', 'mentor_next']) {
+    const tool = h.tools.get(name);
+    assert.equal(tool.exposure, 'codemode');
+    assert.equal(tool.namespace.name, 'mentor');
+    assert.ok(tool.outputSchema, `${name} returns structured data to scripts`);
+  }
+  assert.equal(h.tools.get('mentor_discuss').exposure ?? 'direct', 'direct');
+  const r = await h.tools.get('mentor_status').execute('s', {}, undefined, undefined, h.ctx());
+  assert.deepEqual(r.structuredContent, JSON.parse(r.content[0].text));
+});
+
 async function prepared() {
   const h = harness();
   await h.emit('session_start');

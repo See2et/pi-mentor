@@ -145,7 +145,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
     record: full ? state : compactRecord(state, observation),
   });
   pi.registerTool({
-    name: 'mentor_status', label: 'Mentor status',
+    name: 'mentor_status', label: 'Mentor status', exposure: 'codemode', namespace,
     description: 'Read active-branch records, source observation and latest snapshot. Read-only; works while paused. Human decisions require /mentor or native mentor_assist approval, never chat assent.',
     parameters: Type.Object({}, { additionalProperties: false }),
     outputSchema: Type.Object({ snapshot: Type.String(), paused: Type.Boolean(), error: Type.Optional(Type.String()), sourceObservation: Type.Unknown(), record: StateSchema }),
@@ -161,6 +161,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
     name: 'mentor_next', label: 'Mentor next-action draft', exposure: 'codemode', namespace,
     description: 'Draft ONE exact typed /mentor card; never apply its effects. Latest snapshot required; call last after records/evidence (state/source changes stale it). Include summary and unresolved matters. Only user selection of the returned label—not summary—applies atomically, with no later confirmation. adopt is direction only; scope does not start; start/correct authorize only the exact unit contract; accept binds contract/source/evidence/limitations, never starts work or adopts an experiment as design. No automatic transitions or grading.',
     parameters: Type.Object({ expectedSnapshot: Type.String(), proposal: NextSchema }, { additionalProperties: false }),
+    outputSchema: Type.Object({ snapshot: Type.String() }, { additionalProperties: true }),
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async execute(_id, params, signal, _update, ctx) {
       try {
@@ -222,7 +223,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
   });
   pi.registerTool({
     name: 'mentor_discuss', label: 'Mentor discussion update',
-    description: 'Organize actual conversation with brief disclosure: goals->issues, new issue->hypothesis, exact unconfirmed target->critique, critique->direction, or rethink. Ask concrete stage questions and address answers first; no stage-racing, grading or AI-chosen skips. Never confirms/adopts, authorizes scope/start, switches units, accepts or leaves implementation. Changed targets remain unconfirmed; history stays revision-bound. Use mentor_record for records, mentor_assist for human decisions/skips. Latest snapshot required; paused rejects.',
+    description: 'Organize actual conversation with brief disclosure: goals->issues, new issue->hypothesis, exact unconfirmed target->critique, critique->direction, or rethink. Ask concrete stage questions and address answers first; no stage-racing, grading or AI-chosen skips. Never confirms/adopts, authorizes scope/start, switches units, accepts or leaves implementation. Changed targets remain unconfirmed; history stays revision-bound. Discover mentor_record/status/next via codemode describeTool; use mentor_assist for human decisions/skips. Latest snapshot required; paused rejects.',
     parameters: Type.Object({ expectedSnapshot: Type.String(), action: DiscussionActionSchema }, { additionalProperties: false }),
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async execute(_id, params, signal, _update, ctx) {
@@ -245,7 +246,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
     },
   });
   pi.registerTool({
-    name: 'mentor_record', label: 'Mentor record / propose',
+    name: 'mentor_record', label: 'Mentor record / propose', exposure: 'codemode', namespace,
     description: 'Record AI drafts/proposals, grounded revision-bound critiques/corrections, reported responses, unit contracts/evidence/readiness or optional learning prompts. Never changes phase, selection, human confirmation/judgment or understanding. Exact latest snapshot required; serialize writes, refresh conflicts; paused rejects. Critique corrections reference SAME revision and preserve history; responses are AI reports. Evidence requires valid expectation IDs, exact current contract revision and sourceHash actually observed by mentor_status (rechecked at commit); include observations, references/commands/results, real/substitute/untested methods, limitations and concerns. Passing tests is not expectation satisfaction. Drafts do not authorize implementation.',
     parameters: Type.Object({ expectedSnapshot: Type.String(), action: ModelActionSchema }, { additionalProperties: false }),
     outputSchema: Type.Object({ snapshot: Type.String(), paused: Type.Boolean(), error: Type.Optional(Type.String()), sourceObservation: Type.Unknown(), record: Type.Unknown(), operationError: Type.Optional(Type.String()) }),
