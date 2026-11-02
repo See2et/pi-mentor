@@ -30,7 +30,7 @@ pi --extension .
 - `/mentor pause`：通常チャットへ戻る。一時停止中は Mentor の指示を注入せず、AI の記録操作も拒否します。
 - `/mentor resume`：再開。
 
-AI の `mentor_status`・`mentor_record`・`mentor_next` は codemode から呼び出します（`describeTool` で schema を確認）。status は既定で現在の要約を返し、`{view:"issue",issueId:N}` / `{view:"unit",unitId:N}` で対象の全履歴、`{view:"full"}` で枝の全記録を取得できます。省略内容と取得方法も返します。本人へのネイティブ承認 `mentor_assist` はスクリプトから呼べません。
+Mentor は起動・復元時と記録更新時に Pi 組み込みの codemode を有効にします（一時停止中の status 閲覧にも使用）。他のツール選択は維持します。AI の `mentor_status`・`mentor_record`・`mentor_next` は codemode から呼び出します（`describeTool` で schema を確認）。status は既定で現在の要約を返し、`{view:"issue",issueId:N}` / `{view:"unit",unitId:N}` で対象の全履歴、`{view:"full"}` で枝の全記録を取得できます。省略内容と取得方法も返します。本人へのネイティブ承認 `mentor_assist` はスクリプトから呼べません。
 
 Esc で閉じても記録は変わりません。履歴の閲覧画面の Enter は戻るだけです。候補の作成後やカードを開いている間に記録・コード・セッションが変わった場合は、古い内容での確定を拒否します。候補を整理し直してください。
 

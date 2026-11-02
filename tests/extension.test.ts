@@ -9,15 +9,16 @@ import { visibleWidth } from '@earendil-works/pi-tui';
 import mentorExtension from '../index.ts';
 import { currentJudgment, location, initialState, applyUser, applyModel, mentorContext, GUIDANCE } from '../src/domain.ts';
 import { unitJudgment, evidenceFreshness } from '../src/units.ts';
+import { defaultPiDefinitions, defaultPiToolNames, piLoadout } from './pi-loadout.ts';
 
 type Handler = (...args: any[]) => any;
-function harness(manager = SessionManager.inMemory(), cwd = process.cwd()) {
+function harness(manager = SessionManager.inMemory(), cwd = process.cwd(), runtimeLoadout = false) {
   const events = new Map<string, Handler>();
-  const tools = new Map<string, any>();
+  const tools: Map<string, any> = runtimeLoadout ? defaultPiDefinitions(cwd) : new Map();
   const commands = new Map<string, any>();
   const h = {
     manager, events, tools, commands,
-    activeTools: ['read', 'unrelated_extension_tool'] as string[],
+    activeTools: runtimeLoadout ? [...defaultPiToolNames] : ['read', 'unrelated_extension_tool'] as string[],
     choices: [] as (string | undefined)[], edits: [] as (string | undefined)[], confirmations: [] as boolean[],
     notices: [] as string[], requests: [] as string[],
     menus: [] as { title: string; options: string[] }[], inspections: [] as string[][],
@@ -112,7 +113,7 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd()) {
       if (tool.defaultActive !== false && ['direct', 'model-only'].includes(tool.exposure ?? 'direct')) h.activeTools.push(tool.name);
     },
     getActiveTools: () => [...h.activeTools],
-    setActiveTools: (names: string[]) => { h.activeTools = [...names]; },
+    setActiveTools: (names: string[]) => { h.activeTools = runtimeLoadout ? piLoadout(tools, names).declared.map(t => t.name) : [...names]; },
     registerMessageRenderer() {},
     appendEntry: (kind: string, data: unknown) => h.manager.appendCustomEntry(kind, data),
     sendMessage: (message: any) => h.manager.appendCustomMessageEntry(message.customType, message.content, message.display, message.details),
@@ -221,7 +222,7 @@ test('pause and restored sessions remove direct Mentor tools without changing un
   const enabledManager = h.manager;
   await h.command('pause');
   assert.deepEqual(direct(), []);
-  assert.deepEqual(h.activeTools, ['unrelated_extension_tool', 'another_extension_tool']);
+  assert.deepEqual(h.activeTools, ['unrelated_extension_tool', 'codemode', 'another_extension_tool']);
   const pausedLeaf = h.manager.getLeafId()!;
   await h.emit('session_compact'); await h.emit('session_tree');
   assert.deepEqual(direct(), []);
@@ -234,7 +235,28 @@ test('pause and restored sessions remove direct Mentor tools without changing un
   h.manager = enabledManager; h.manager.branch(pausedLeaf); await h.emit('session_start');
   assert.deepEqual(direct(), []);
   await h.command('resume');
-  assert.deepEqual(h.activeTools.filter(n => !n.startsWith('mentor_')), ['unrelated_extension_tool', 'another_extension_tool']);
+  assert.deepEqual(h.activeTools.filter(n => !n.startsWith('mentor_')), ['unrelated_extension_tool', 'codemode', 'another_extension_tool']);
+});
+
+test('default Pi loadout exposes codemode to reach status through startup, pause and resume, never scripting approval', async () => {
+  const h = harness(SessionManager.inMemory(), process.cwd(), true);
+  assert.deepEqual(h.activeTools, defaultPiToolNames, 'codemode is registered inactive by Pi');
+  const checkReachability = async (enabled: boolean) => {
+    const { declared, callable } = piLoadout(h.tools, h.activeTools);
+    assert.ok(declared.some(tool => tool.name === 'codemode'), 'model needs an active codemode entry point');
+    const status = callable.find(tool => tool.name === 'mentor_status');
+    assert.ok(status, 'registered status must be callable from the entry point');
+    assert.equal((await status.execute('nested-status', {}, undefined, undefined, h.ctx())).details.paused, !enabled);
+    assert.equal(callable.some(tool => tool.name === 'mentor_assist'), false, 'model-only approval must never enter scripts');
+    assert.deepEqual(declared.filter(tool => tool.name.startsWith('mentor_')).map(tool => tool.name).sort(), enabled ? ['mentor_assist', 'mentor_discuss'] : []);
+    for (const name of defaultPiToolNames) assert.ok(declared.some(tool => tool.name === name));
+  };
+  await h.emit('session_start'); await checkReachability(false);
+  await h.command('resume'); await checkReachability(true);
+  await h.command('pause'); await checkReachability(false);
+  h.activeTools = h.activeTools.filter(name => name !== 'codemode');
+  await h.emit('session_compact'); await checkReachability(false);
+  await h.command('resume'); await checkReachability(true);
 });
 
 test('codemode container allows observed nested status but nested writes make source unknown and approvals stay blocked', async () => {

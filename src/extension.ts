@@ -23,6 +23,8 @@ export default function mentorExtension(pi: ExtensionAPI): void {
   const mentorTools = new Set(['mentor_status', 'mentor_record', 'mentor_next', 'mentor_assist', 'mentor_discuss']);
   const syncTools = () => {
     const unrelated = pi.getActiveTools().filter(name => !mentorTools.has(name));
+    // Pi registers codemode inactive by default; paused status still needs its entry point.
+    if (!unrelated.includes('codemode')) unrelated.push('codemode');
     pi.setActiveTools(state.enabled && !error ? [...unrelated, 'mentor_assist', 'mentor_discuss'] : unrelated);
   };
   let activity = 0;
