@@ -136,6 +136,20 @@ test('record and status use discoverable codemode structured results; discussion
   assert.deepEqual(r.structuredContent, JSON.parse(r.content[0].text));
 });
 
+test('mutations return deltas and recovery, not repeated record history', async () => {
+  const h = harness();
+  await h.emit('session_start'); await h.command('resume');
+  const r = await h.record({ type: 'proposal', text: 'A proposal' });
+  assert.equal(r.details.operationStatus, 'recorded');
+  assert.deepEqual(r.details.recorded, { type: 'proposal', proposalId: 1 });
+  assert.equal(r.details.record, undefined);
+  assert.ok(r.details.snapshot);
+  const failed = await h.record({ type: 'proposal', text: 'stale' }, 'old');
+  assert.equal(failed.isError, true);
+  assert.equal(failed.details.record, undefined);
+  assert.ok(failed.details.recovery.includes('mentor_status'));
+});
+
 async function prepared() {
   const h = harness();
   await h.emit('session_start');

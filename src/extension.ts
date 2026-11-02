@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Text } from '@earendil-works/pi-tui';
 import { Type } from 'typebox';
-import { DiscussionActionSchema, applyDiscussion, ModelActionSchema, StateSchema, applyModel, applyUser, compactRecord, initialState, mentorContext, restore, type State, type UserAction } from './domain.ts';
+import { DiscussionActionSchema, applyDiscussion, ModelActionSchema, StateSchema, applyModel, applyUser, compactRecord, initialState, mentorContext, restore, type ModelAction, type State, type UserAction } from './domain.ts';
 import { mentorMenu } from './menu.ts';
 import { guidedMenu, type GuidedOwner } from './guided-menu.ts';
 import { actionMeaning, operationFeedback, exactArtifact, sourceIdentity, proposeNext, transition, workTitle } from './guided.ts';
@@ -139,11 +139,28 @@ export default function mentorExtension(pi: ExtensionAPI): void {
   });
 
   const namespace = { name: 'mentor', description: 'Mentor records and /mentor card drafts. Discover schemas with describeTool; serialize writes with the latest snapshot. Native approval uses mentor_assist, never scripts.' };
-  const result = (full = false) => ({
-    snapshot: token(), paused: !state.enabled, error,
+  const result = () => ({
+    snapshot: token(), paused: !state.enabled, error, operationStatus: 'unchanged',
     sourceObservation: observation,
-    record: full ? state : compactRecord(state, observation),
+    location: { whole: state.whole, issueId: state.activeIssue, unitId: state.activeUnit },
+    recovery: 'Read mentor_status via codemode for current state; refresh before retrying stale writes. Only /mentor can resume/reset.',
   });
+  const recorded = (action: ModelAction) => {
+    if (action.type === 'proposal') return { type: action.type, proposalId: state.proposals.at(-1)!.id };
+    if ('issueId' in action) {
+      const issue = state.issues.find(i => i.id === action.issueId)!;
+      return { type: action.type, issueId: issue.id,
+        revision: action.type === 'draft' ? issue.revisions.at(-1)!.revision : action.revision,
+        critiqueId: action.type === 'critique' ? issue.critiques.at(-1)!.id : undefined,
+        responseNumber: action.type === 'response' ? issue.responses.length : undefined };
+    }
+    const unit = action.unitId ? state.units.find(u => u.id === action.unitId)! : state.units.at(-1)!;
+    return { type: action.type, unitId: unit.id,
+      revision: action.type === 'unitDraft' ? unit.revisions.at(-1)!.revision : action.revision,
+      evidenceId: action.type === 'unitEvidence' ? unit.evidence.at(-1)!.id : undefined,
+      reportNumber: action.type === 'unitReport' ? unit.reports.length : undefined,
+      noteNumber: action.type === 'unitSuggestion' ? unit.notes.length : undefined };
+  };
   pi.registerTool({
     name: 'mentor_status', label: 'Mentor status', exposure: 'codemode', namespace,
     description: 'Read active-branch records, source observation and latest snapshot. Read-only; works while paused. Human decisions require /mentor or native mentor_assist approval, never chat assent.',
@@ -153,7 +170,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
     async execute(_id, _params, _signal, _update, ctx) {
       checkContext(ctx);
       refresh(ctx); paint(ctx);
-      const data = result(true);
+      const data = { ...result(), record: state };
       return { content: [{ type: 'text', text: JSON.stringify(data) }], details: data, structuredContent: JSON.parse(JSON.stringify(data)) };
     },
   });
@@ -249,14 +266,14 @@ export default function mentorExtension(pi: ExtensionAPI): void {
     name: 'mentor_record', label: 'Mentor record / propose', exposure: 'codemode', namespace,
     description: 'Record AI drafts/proposals, grounded revision-bound critiques/corrections, reported responses, unit contracts/evidence/readiness or optional learning prompts. Never changes phase, selection, human confirmation/judgment or understanding. Exact latest snapshot required; serialize writes, refresh conflicts; paused rejects. Critique corrections reference SAME revision and preserve history; responses are AI reports. Evidence requires valid expectation IDs, exact current contract revision and sourceHash actually observed by mentor_status (rechecked at commit); include observations, references/commands/results, real/substitute/untested methods, limitations and concerns. Passing tests is not expectation satisfaction. Drafts do not authorize implementation.',
     parameters: Type.Object({ expectedSnapshot: Type.String(), action: ModelActionSchema }, { additionalProperties: false }),
-    outputSchema: Type.Object({ snapshot: Type.String(), paused: Type.Boolean(), error: Type.Optional(Type.String()), sourceObservation: Type.Unknown(), record: Type.Unknown(), operationError: Type.Optional(Type.String()) }),
+    outputSchema: Type.Object({ snapshot: Type.String(), paused: Type.Boolean(), operationStatus: Type.Optional(Type.String()), operationError: Type.Optional(Type.String()) }, { additionalProperties: true }),
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async execute(_id, params, signal, _update, ctx) {
       try {
         if (signal?.aborted) throw new Error('Mentor record cancelled.');
         check(params.expectedSnapshot, ctx);
         persist(applyModel(state, params.action, observation), ctx);
-        const data = result();
+        const data = { ...result(), operationStatus: 'recorded', recorded: recorded(params.action) };
         return { content: [{ type: 'text', text: JSON.stringify(data) }], details: data, structuredContent: JSON.parse(JSON.stringify(data)) };
       } catch (failure) {
         const data = { ...result(), operationError: failure instanceof Error ? failure.message : String(failure) };
