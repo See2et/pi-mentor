@@ -272,12 +272,46 @@ export function location(s: State, observation?: Observation): string[] {
   ];
 }
 export function compactRecord(s: State, observation?: Observation) {
+  const wholeReview = s.whole === 'consistency' || s.whole === 'summary';
   return {
-    sequence: s.sequence, recentDiscussion: s.discussionHistory?.slice(-3), guided: s.guided ? { pending: s.guided.pending, recentEdges: s.guided.history.slice(-3) } : undefined, goal: s.goal, constraints: s.constraints, whole: s.whole, activeIssue: s.activeIssue,
-    issues: s.issues.map(i => ({ id: i.id, text: i.text, inner: i.inner, current: currentRevision(i), judgment: currentJudgment(i), concerns: concerns(i), drafts: i.revisions.filter(r => !r.confirmed).slice(-3), recentResponses: i.responses.slice(-4) })),
-    proposals: s.proposals.slice(-4), activeUnit: s.activeUnit,
+    sequence: s.sequence, goal: s.goal, constraints: s.constraints, whole: s.whole,
+    guided: s.guided ? { pending: s.guided.pending, appliedCount: s.guided.history.length } : undefined,
+    activeIssue: s.activeIssue,
+    issues: s.issues.map(i => {
+      const full = i.id === s.activeIssue || wholeReview;
+      const current = currentRevision(i), judgment = currentJudgment(i), open = concerns(i);
+      return { id: i.id, text: i.text, inner: i.inner, currentRevision: i.currentRevision,
+        current: full ? current : undefined, confirmed: current?.confirmed,
+        judgment: full ? judgment : judgment ? { revision: judgment.revision, decision: judgment.decision, author: judgment.author } : undefined,
+        concerns: full ? open : undefined, concernIds: open.map(c => c.id),
+        pendingDrafts: i.revisions.filter(r => !r.confirmed).map(r => r.revision),
+        drafts: i.id === s.activeIssue ? i.revisions.filter(r => !r.confirmed && r.revision !== i.currentRevision) : undefined,
+        responses: i.id === s.activeIssue ? i.responses.filter(r => r.revision === i.currentRevision) : undefined,
+        historyCounts: { revisions: i.revisions.length, critiques: i.critiques.length, responses: i.responses.length, judgments: i.judgments.length },
+        retrieve: { view: 'issue', issueId: i.id } };
+    }),
+    proposalIds: s.proposals.map(p => p.id), activeUnit: s.activeUnit,
     sourceObservation: observation,
-    units: s.units.map(u => ({ id: u.id, phase: u.phase, current: unitRevision(u), freshness: evidenceFreshness(u, observation), judgment: unitJudgment(u, observation), latestJudgment: latestUnitJudgment(u), judgmentStatus: unitJudgmentStatus(u, observation), drafts: u.revisions.filter(r => !r.confirmed).slice(-2), evidence: u.evidence.slice(-2), reports: u.reports.slice(-3), notes: u.notes.slice(-3) })),
+    units: s.units.map(u => {
+      const full = u.id === s.activeUnit;
+      const current = unitRevision(u), latest = u.judgments.at(-1);
+      const summaryJudgment = latest ? { revision: latest.revision, decision: latest.decision, source: latest.source, sourceError: latest.sourceError, evidenceIds: latest.evidenceIds } : undefined;
+      return { id: u.id, title: (current ?? u.revisions.at(-1))?.contract.title, phase: u.phase, currentRevision: u.currentRevision,
+        current: full || wholeReview ? current : undefined,
+        freshness: evidenceFreshness(u, observation), judgmentStatus: unitJudgmentStatus(u, observation),
+        judgment: full ? unitJudgment(u, observation) : undefined,
+        latestJudgment: full ? latestUnitJudgment(u) : summaryJudgment,
+        lastHistoricalJudgment: full && latest?.revision !== u.currentRevision ? summaryJudgment : undefined,
+        pendingDrafts: u.revisions.filter(r => !r.confirmed).map(r => r.revision),
+        drafts: full ? u.revisions.filter(r => !r.confirmed) : undefined,
+        evidence: full || wholeReview ? u.evidence.filter(e => e.revision === u.currentRevision) : undefined,
+        reports: full ? u.reports.filter(r => r.revision === u.currentRevision) : undefined,
+        notes: full ? u.notes.filter(n => n.revision === u.currentRevision) : undefined,
+        historyCounts: { revisions: u.revisions.length, evidence: u.evidence.length, reports: u.reports.length, notes: u.notes.length, judgments: u.judgments.length },
+        retrieve: { view: 'unit', unitId: u.id } };
+    }),
+    omitted: ['Historical revisions/responses/judgments, discussion/card history and proposal text; non-active target details (except whole-review contracts/hypotheses/concerns/evidence)'],
+    recovery: 'Call mentor_status via codemode with each retrieve query for complete target history, or {view:"full"} for global/proposal history. Summaries and pending IDs are not decisions.',
   };
 }
 export const GUIDANCE = `You are a learning mentor in normal Pi chat. The user's goals/constraints govern. Ask concrete questions, address actual answers before moving, and briefly disclose mentor_discuss updates; never race stages, grade understanding or require phase/revision forms. Backtracking is valid.

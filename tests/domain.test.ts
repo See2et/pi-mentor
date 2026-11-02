@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, applyUser, applyModel, restore, location, mentorContext, hintPrompt } from '../src/domain.ts';
+import { initialState, applyUser, applyModel, restore, location, mentorContext, hintPrompt, compactRecord } from '../src/domain.ts';
 
 function setup() {
   let s = applyUser(initialState(), { type: 'resume' });
@@ -57,6 +57,29 @@ test('active branch restores last valid snapshot and refuses unsupported/corrupt
   assert.match(restore([entry(a), entry({ ...b, schema: 9 })]).error!, /unsupported|invalid/);
   assert.equal(restore([entry(a), entry({ ...b, schema: 9 })]).state.whole, 'goals');
   assert.equal(restore([]).state.enabled, false);
+});
+
+test('projection retains active current concerns and exposes other pending decisions without history growth', () => {
+  let s = setup();
+  s = applyUser(s, { type: 'phase', whole: 'explore', inner: 'critique' });
+  s = applyModel(s, { type: 'critique', issueId: 1, revision: 1, category: 'uncertainty', text: 'Current concern', evidence: 'Concrete condition', status: 'open' });
+  s = applyUser(s, { type: 'issue', text: 'Other issue' });
+  s = applyUser(s, { type: 'hypothesis', issueId: 2, text: 'Other current hypothesis' });
+  s = applyModel(s, { type: 'draft', issueId: 2, text: 'Pending alternative' });
+  const before = JSON.stringify(compactRecord(s)).length;
+  for (let n = 0; n < 40; n++) {
+    s.issues[1].responses.push({ revision: 1, text: 'Historical response '.repeat(100), author: 'ai' });
+    s.issues[1].judgments.push({ revision: 1, decision: 'defer', note: 'Historical note '.repeat(100), author: 'human' });
+  }
+  const projected = compactRecord(s);
+  assert.equal(projected.issues[0].concerns?.[0].text, 'Current concern');
+  assert.deepEqual(projected.issues[1].pendingDrafts, [2]);
+  assert.equal(projected.issues[1].judgment?.decision, 'defer');
+  assert.ok(JSON.stringify(projected).length - before < 500);
+  assert.ok(projected.omitted.length);
+  const consistency = compactRecord({ ...s, whole: 'consistency' });
+  assert.equal(consistency.issues[1].current?.text, 'Other current hypothesis');
+  assert.equal(s.issues[1].responses.length, 40, 'projection never mutates history');
 });
 
 test('UI and model context share the same current location, including restored branch', () => {
