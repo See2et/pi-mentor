@@ -1,17 +1,25 @@
-import type { ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
+import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
-import { menuDirection, selectMenu } from './navigation.ts';
+import { menuDirection } from './navigation.ts';
 
 export type CardChoice = 'continue' | 'edge' | 'other';
 export const plain = (text: string) => text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
-export async function actionCard(ctx: ExtensionCommandContext, title: string, body: string, action: string): Promise<CardChoice | undefined> {
-  const options: [CardChoice, string][] = [['continue', '議論を続ける（変更なし）'], ['edge', action], ['other', 'その他…']];
+export async function actionCard(ctx: ExtensionContext, title: string, body: string, action: string, approval?: { signal?: AbortSignal }): Promise<CardChoice | undefined> {
+  const options: [CardChoice, string][] = approval
+    ? [['continue', '取り消す（変更なし）'], ['edge', `今回だけ承認: ${action}`]]
+    : [['continue', '議論を続ける（変更なし）'], ['edge', action], ['other', 'その他…']];
+  if (approval && (!ctx.hasUI || ctx.mode !== 'tui' || approval.signal?.aborted)) return;
   if (ctx.mode !== 'tui') {
     if (await ctx.ui.editor(`${title}（閲覧のみ。保存で選択へ／Esc取消）`, body) === undefined) return;
-    const selected = await selectMenu(ctx, title, options.map(([, label]) => label));
+    const selected = await ctx.ui.select(title, options.map(([, label]) => label));
     return options.find(([, label]) => label === selected)?.[0];
   }
-  return ctx.ui.custom<CardChoice | undefined>((tui, theme, _keys, done) => {
+  let cancel: (() => void) | undefined;
+  try {
+    return await ctx.ui.custom<CardChoice | undefined>((tui, theme, _keys, done) => {
+    cancel = () => done(undefined);
+    approval?.signal?.addEventListener('abort', cancel, { once: true });
+    if (approval?.signal?.aborted) cancel();
     let selected = 0, top = 0, page = 1, count = 0;
     let pinnedEnd = false;
     return {
@@ -44,4 +52,7 @@ export async function actionCard(ctx: ExtensionCommandContext, title: string, bo
       },
     };
   }, { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', margin: { top: 1, bottom: 1, left: 0, right: 0 } } });
+  } finally {
+    if (cancel) approval?.signal?.removeEventListener('abort', cancel);
+  }
 }

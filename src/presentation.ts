@@ -16,7 +16,7 @@ export function widgetLines(s: State, width: number, error?: string, observation
     line(`Mentor · ${workTitle(s)}`),
     ...(candidate ? [line(`候補: ${candidate}`)] : []),
     ...(next?.unresolved ? [line(`未解決: ${next.unresolved}`)] : []),
-    line(`次: ${next ? actionMeaning(next.edge).label : s.guided?.pending ? '候補を整理し直す（記録／コード変更）' : '会話から次の一手を整理する'} · /mentor`),
+    line(`次: ${next ? actionMeaning(next.edge, s).label : s.guided?.pending ? '候補を整理し直す（記録／コード変更）' : '会話から次の一手を整理する'} · /mentor`),
     ...(s.whole === 'implementation' && u ? [line(`${evidenceFreshness(u, observation)} · ${unitJudgmentStatus(u, observation)}`)] : []),
   ];
 }

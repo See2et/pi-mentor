@@ -20,7 +20,7 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd()) {
     choices: [] as (string | undefined)[], edits: [] as (string | undefined)[], confirmations: [] as boolean[],
     notices: [] as string[], requests: [] as string[],
     menus: [] as { title: string; options: string[] }[], inspections: [] as string[][],
-    cardResults: [] as string[],
+    cardResults: [] as string[], approvalBodies: [] as string[],
     inspectResults: [] as boolean[], inspector: undefined as (() => Promise<any>) | undefined,
     widget: undefined as Handler | undefined,
     editor: undefined as (() => Promise<string | undefined>) | undefined,
@@ -32,7 +32,8 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd()) {
           select: async (title: string, options: string[]) => { h.menus.push({ title, options }); return h.choices.shift(); },
           custom: async (factory: Handler) => {
             let result: unknown;
-            const component = factory({ terminal: { rows: 28 }, requestRender() {} }, { fg: (_t: string, x: string) => x }, {}, (value: unknown) => { result = value; });
+            let finish: ((value: unknown) => void) | undefined;
+            const component = factory({ terminal: { rows: 28 }, requestRender() {} }, { fg: (_t: string, x: string) => x }, {}, (value: unknown) => { result = value; finish?.(value); });
             const screen: string[] = component.render(10000);
             if (screen.some(line => line.startsWith('→ '))) {
               // Drive the real menu through keyboard input, including off-screen options.
@@ -55,6 +56,26 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd()) {
               return result;
             }
             h.inspections.push(component.render(36));
+            if (screen[0] === 'Mentor 操作の一回限りの承認') {
+              const pages: string[] = [];
+              for (;;) {
+                const page = component.render(10000).join('\n');
+                if (pages.at(-1) === page) break;
+                pages.push(page);
+                component.handleInput('\x1b[6~');
+              }
+              h.approvalBodies.push(pages.join('\n'));
+              component.handleInput('\x1b[H');
+              return new Promise(resolve => {
+                finish = resolve;
+                const drive = (choice: unknown) => {
+                  if (choice === 'edge') component.handleInput('k');
+                  component.handleInput(choice === undefined ? '\x1b' : '\r');
+                };
+                if (h.inspector) void h.inspector().then(drive);
+                else drive(h.cardResults.shift());
+              });
+            }
             return h.cardResults.length ? h.cardResults.shift() : h.inspector ? h.inspector() : h.inspectResults.shift() ?? true;
           },
           editor: () => h.editor ? h.editor() : Promise.resolve(h.edits.shift()),
@@ -72,6 +93,9 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd()) {
     async next(proposal: object, expectedSnapshot?: string) {
       assert.ok(tools.get('mentor_next'), 'AI can prepare one next-action card without advancing');
       return tools.get('mentor_next').execute('n', { expectedSnapshot: expectedSnapshot ?? (await h.status()).snapshot, proposal }, undefined, undefined, h.ctx());
+    },
+    async assist(proposal: object, options: { signal?: AbortSignal; ctx?: ExtensionCommandContext; expectedSnapshot?: string } = {}) {
+      return tools.get('mentor_assist').execute('assist', { expectedSnapshot: options.expectedSnapshot ?? (await h.status()).snapshot, proposal }, options.signal, undefined, options.ctx ?? h.ctx());
     },
     render(width: number): string[] { return h.widget!({}, { fg: (_token: string, text: string) => text }).render(width); },
   };
@@ -355,6 +379,7 @@ test('guided card prepares without authority; one chosen edge bundles exact reco
     const count = h.manager.getEntries().length;
     h.cardResults.push('edge'); await h.command();
     assert.equal(h.manager.getEntries().length, count + 1, 'one atomic state entry per edge');
+    assert.match(h.notices.at(-1)!, /適用しました:/, 'normal card reports the actual applied action without another confirmation');
     assert.equal(h.requests.length, 0, 'choosing an edge does not force inference');
   };
   await offer({ type: 'goals', goal: '安全な入力を設計する', constraints: 'API維持' });
@@ -446,6 +471,173 @@ test('guided entry, alternatives and topic menus use keyboard selection without 
   assert.ok(h.menus.some(m => m.title.startsWith('その他')));
   assert.ok(h.menus.some(m => m.title.startsWith('戻る相談')));
   assert.equal((await h.status()).record.activeIssue, null, 'selecting a topic prepares a card, not a state change');
+});
+
+const repair = { summary: 'これは操作ラベルではない', unresolved: '読者の条件は議論を続ける', edge: { type: 'critique', text: '読者の視点を含む正確な修正案' } };
+async function stuck(cwd?: string) {
+  const h = cwd ? harness(SessionManager.inMemory(), cwd) : await prepared();
+  if (cwd) { await h.emit('session_start'); await h.command('resume'); h.edits.push('論点'); await h.command('add'); h.choices.push('#1 論点'); await h.command('select'); h.edits.push('現在の案'); await h.command('hypothesis'); }
+  await h.record({ type: 'draft', issueId: 1, text: repair.edge.text });
+  h.choices.push('論点の検討', '判断'); await h.command('phase');
+  await h.emit('input', { source: 'interactive', text: '操作で詰まった。修正案を対象に戻して' });
+  return h;
+}
+
+test('assistance needs real one-time native approval; exact repair preserves history without adoption, start or acceptance', async () => {
+  const h = await stuck();
+  const before = (await h.status()).record;
+  const offer = await h.next(repair);
+  assert.equal(offer.details.operationStatus, 'proposed');
+  assert.equal(offer.details.label, 'この修正案を検討対象にして批判・弁護する');
+  assert.notEqual(offer.details.label, repair.summary);
+  assert.equal((await h.status()).record.issues[0].currentRevision, 1);
+  h.cardResults.push('continue');
+  assert.equal((await h.assist(repair)).details.operationStatus, 'cancelled');
+  assert.equal((await h.status()).record.issues[0].inner, 'judgment');
+  const count = h.manager.getEntries().length;
+  h.cardResults.push('edge');
+  const result = await h.assist(repair, { ctx: { ...h.ctx(), isIdle: () => false } });
+  assert.equal(result.details.operationStatus, 'applied', JSON.stringify(result.details));
+  const after = (await h.status()).record;
+  assert.equal(h.manager.getEntries().length, count + 1);
+  assert.equal(after.issues[0].currentRevision, 2);
+  assert.equal(after.issues[0].inner, 'critique');
+  assert.equal(after.issues[0].revisions.length, 2);
+  assert.deepEqual(after.issues[0].judgments, before.issues[0].judgments);
+  assert.deepEqual(after.issues[0].critiques, before.issues[0].critiques);
+  assert.deepEqual(after.units, before.units);
+  assert.match(result.details.feedback, /r1 → r2/);
+  assert.match(h.notices.at(-1)!, /読者の視点を含む正確な修正案/);
+  assert.match(h.notices.at(-1)!, /前提と弱点を検討する/);
+});
+
+test('native assistance authorizes exact adoption, scope, start and acceptance only after affirmative selection, one atomic entry each', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mentor-authority-'));
+  try {
+    execFileSync('git', ['-C', dir, 'init', '-q']);
+    writeFileSync(join(dir, 'code.ts'), 'synthetic observed source');
+    execFileSync('git', ['-C', dir, 'add', '.']);
+    const h = await stuck(dir);
+    const approve = async (edge: object, expectedText: string[]) => {
+      const proposal = { summary: '今回の正確な操作', unresolved: '実サービスは未確認', edge };
+      const before = (await h.status()).record;
+      const count = h.manager.getEntries().length;
+      h.cardResults.push('continue');
+      const cancelled = await h.assist(proposal);
+      assert.equal(cancelled.details.operationStatus, 'cancelled', JSON.stringify(cancelled.details));
+      assert.deepEqual((await h.status()).record, before);
+      assert.equal(h.manager.getEntries().length, count, 'default Enter cancels without any entry');
+      let resolve!: (value: string) => void, opened!: () => void;
+      const ready = new Promise<void>(done => { opened = done; });
+      h.inspector = () => new Promise(done => { resolve = done; opened(); });
+      const pending = h.assist(proposal);
+      await ready;
+      assert.deepEqual((await h.status()).record, before, 'preparing and displaying are not authority');
+      assert.equal(h.manager.getEntries().length, count);
+      const body = h.approvalBodies.at(-1)!;
+      for (const text of expectedText) assert.ok(body.includes(text), `approval must expose ${text}: ${body}`);
+      assert.ok(!body.includes('適用しました:'), 'approval must not claim an applied result');
+      assert.ok(!body.includes('この一回だけの承認です。採用・実装許可・結果の受け入れは記録しません。'));
+      resolve('edge');
+      const applied = await pending;
+      h.inspector = undefined;
+      assert.equal(applied.details.operationStatus, 'applied', JSON.stringify(applied.details));
+      assert.equal(h.manager.getEntries().length, count + 1);
+      const after = (await h.status()).record;
+      assert.equal(after.sequence, before.sequence + 1);
+      assert.equal(after.guided.history.length, (before.guided?.history.length ?? 0) + 1);
+      assert.match(applied.details.feedback, /適用しました:/);
+      assert.equal(h.requests.length, 0, 'approval never automatically starts inference or another operation');
+      return after;
+    };
+    let s = await approve({ type: 'adopt', note: '方向だけを採用' }, ['現在の案', '方向だけを採用', '実装は許可しません']);
+    assert.equal(s.issues[0].judgments.at(-1).decision, 'adopt');
+    assert.equal(s.issues[0].judgments.at(-1).author, 'human');
+    assert.equal(s.whole, 'implementation');
+    assert.equal(s.activeUnit, null);
+    assert.equal(s.units.length, 0, 'adoption never starts implementation');
+    const contract = { ...unitContract, kind: 'experiment', expectations: [...unitContract.expectations, { id: 'E2', text: '実サービスで拒否' }] };
+    s = await approve({ type: 'scope', contract }, ['仮説実験（設計採用ではない）', contract.scope, 'まだ実装・実験を開始せず']);
+    assert.equal(s.units[0].phase, 'scope');
+    assert.deepEqual(s.units[0].revisions[0].contract, contract);
+    s = await approve({ type: 'start', contract }, [contract.scope, 'E1: 過大入力を拒否', 'E2: 実サービスで拒否', contract.nonGoals, contract.verificationPlan, 'この単位だけの実装・検証を明示的に許可']);
+    assert.equal(s.units[0].phase, 'implementing');
+    assert.deepEqual(s.units[0].revisions.at(-1).contract, contract);
+    assert.equal(s.units[0].revisions.at(-1).confirmed, true);
+    const status = await h.status();
+    const revision = s.units[0].currentRevision;
+    assert.equal((await h.record({ type: 'unitEvidence', unitId: 1, revision, sourceHash: status.sourceObservation.source.hash, entries: [{ expectationId: 'E1', observation: '代替APIで拒否を観測', references: ['node check-input.ts; exit 0; response 400'], method: 'substitute', limitations: '本番サービス未確認' }], concerns: '実サービスの挙動は未知' })).isError, undefined);
+    h.cardResults.push('edge');
+    assert.equal((await h.assist({ summary: '結果を調べる', unresolved: '', edge: { type: 'inspect' } })).details.operationStatus, 'applied');
+    s = await approve({ type: 'accept', note: '不足と代替検証を留保して受け入れる' }, [contract.scope, 'E2: 実サービスで拒否', status.sourceObservation.source.hash, '代替APIで拒否を観測', 'node check-input.ts; exit 0; response 400', 'substitute', '本番サービス未確認', '実サービスの挙動は未知', '証拠なし', '不足と代替検証を留保して受け入れる', '次の実装は開始しません', '設計・機能採用ではありません']);
+    const judgment = s.units[0].judgments.at(-1);
+    assert.equal(judgment.decision, 'accept');
+    assert.equal(judgment.author, 'human');
+    assert.equal(judgment.revision, revision);
+    assert.equal(judgment.source.hash, status.sourceObservation.source.hash);
+    assert.deepEqual(judgment.evidenceIds, [1]);
+    assert.equal(s.activeUnit, 1);
+    assert.equal(s.units.length, 1);
+    assert.equal(s.units[0].phase, 'judgment', 'acceptance never starts a next unit');
+    assert.equal(s.issues[0].judgments.length, 1, 'experiment acceptance never adopts a design');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('assistance rejects missing/synthesized input, no UI, paused, busy and aborted requests without mutation', async () => {
+  const h = await stuck();
+  const before = (await h.status()).record;
+  await h.emit('input', { source: 'extension', text: '操作してよいという引用' });
+  assert.equal((await h.assist(repair)).isError, true);
+  await h.emit('input', { source: 'interactive', text: '修正案へ戻して' });
+  assert.equal((await h.assist(repair, { ctx: { ...h.ctx(), hasUI: false } })).isError, true);
+  await h.emit('tool_execution_start', { toolCallId: 'other', toolName: 'bash' });
+  assert.equal((await h.assist(repair)).isError, true);
+  await h.emit('tool_execution_end', { toolCallId: 'other', toolName: 'bash' });
+  const controller = new AbortController(); controller.abort();
+  assert.equal((await h.assist(repair, { signal: controller.signal })).isError, true);
+  assert.deepEqual((await h.status()).record, before);
+  await h.command('pause');
+  const paused = (await h.status()).record;
+  assert.equal((await h.assist(repair)).isError, true);
+  assert.deepEqual((await h.status()).record, paused);
+});
+
+test('open native approval rejects cancellation and stale state/source/session/branch/request/tool activity atomically', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mentor-assist-'));
+  try {
+    execFileSync('git', ['-C', dir, 'init', '-q']);
+    writeFileSync(join(dir, 'code.ts'), 'original');
+    execFileSync('git', ['-C', dir, 'add', '.']);
+    for (const boundary of ['cancel', 'abort', 'state', 'source', 'session', 'branch', 'request', 'tool', 'concurrent']) {
+      writeFileSync(join(dir, 'code.ts'), 'original');
+      const h = await stuck(dir);
+      const before = (await h.status()).record;
+      let resolve!: (value: string) => void, opened!: () => void;
+      const ready = new Promise<void>(done => { opened = done; });
+      h.inspector = () => new Promise(done => { resolve = done; opened(); });
+      const controller = new AbortController();
+      const open = h.assist(repair, { signal: controller.signal });
+      await ready;
+      if (boundary === 'abort') controller.abort();
+      if (boundary === 'state') await h.record({ type: 'proposal', text: '別記録' });
+      if (boundary === 'source') writeFileSync(join(dir, 'code.ts'), 'changed');
+      if (boundary === 'session') { h.manager = SessionManager.inMemory(); await h.emit('session_start'); }
+      if (boundary === 'branch') { h.manager.branch(h.manager.getBranch()[0].id); await h.emit('session_tree'); }
+      if (boundary === 'request') await h.emit('input', { source: 'interactive', text: '別の質問' });
+      if (boundary === 'tool') { await h.emit('tool_execution_start', { toolCallId: 'other', toolName: 'mentor_other_writer' }); await h.emit('tool_execution_end', { toolCallId: 'other', toolName: 'mentor_other_writer' }); }
+      if (boundary === 'concurrent') assert.equal((await h.assist(repair)).isError, true);
+      const immediatelyBefore = (await h.status()).record;
+      resolve(boundary === 'cancel' ? 'continue' : 'edge');
+      const result = await open;
+      if (boundary === 'concurrent') {
+        assert.equal(result.details.operationStatus, 'applied');
+      } else {
+        assert.equal(result.details.operationStatus, ['cancel', 'abort'].includes(boundary) ? 'cancelled' : 'rejected', boundary);
+        assert.deepEqual((await h.status()).record, immediatelyBefore, boundary);
+        if (!['state', 'session', 'branch'].includes(boundary)) assert.deepEqual((await h.status()).record, before, boundary);
+      }
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('legacy contextual menu remains available only as an explicit advanced shortcut', async () => {

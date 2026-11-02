@@ -31,7 +31,7 @@ export async function guidedMenu(ctx: ExtensionCommandContext, owner: GuidedOwne
   let proposal = currentNext(s, o);
   const organize = () => owner.ask('[Mentor: organize next action]\nContinue our current discussion without advancing it. Help me with a suitable graduated hint or a focused question, then organize the current artifact and unresolved matters. When concrete enough, use mentor_next with the latest snapshot to prepare ONE meaningful next-action card. This request does not select an edge, adopt anything, authorize implementation or accept a result.');
   for (;;) {
-    const meaning = proposal && actionMeaning(proposal.edge);
+    const meaning = proposal && actionMeaning(proposal.edge, s);
     const body = proposal ? `次にすること: ${meaning!.label}\n選ぶと: ${meaning!.effect}\n\n候補（詳細はスクロール）:\n${exactArtifact(s, proposal, o)}` : `ここでは普通のチャットで相談を続けます。\n${s.guided?.pending ? '前の候補は記録またはコードが変わったため使えません。整理し直してください。' : '次の一手はまだ整理されていません。AIが会話から目標・案・未解決事項をまとめます。'}\n\n「次の一手を一緒に整理する」は相談だけを始め、何も確定しません。ヒントや別の進み方は「その他…」から選べます。`;
     const selected = await actionCard(ctx, workTitle(s), body, meaning?.label ?? '次の一手を一緒に整理する');
     owner.check(token);
@@ -48,7 +48,7 @@ export async function guidedMenu(ctx: ExtensionCommandContext, owner: GuidedOwne
     const options: [string, string][] = [
       ['back', 'カードに戻る'], ['hint', '今回だけのヒントを依頼'], ['organize', '別の進み方を相談する（変更なし）'],
       ...('note' in (proposal?.edge ?? {}) ? [['note', '今回記録する理由・留保を編集'] as [string, string]] : []),
-      ...alternatives.map((e, n): [string, string] => [`alt:${n}`, actionMeaning(e).label]),
+      ...alternatives.map((e, n): [string, string] => [`alt:${n}`, actionMeaning(e, s).label]),
       ['topics', '別の論点・作業の相談に戻る…'], ['history', '全記録・履歴を見る'], ['pause', 'Mentor を一時停止する'],
     ];
     const choice = await choose('その他（選ぶまでは変更しません）', options);

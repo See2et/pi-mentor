@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyUser, initialState, restore } from '../src/domain.ts';
-import { actionMeaning, currentNext, exactArtifact, pendingNext, proposeNext, transition } from '../src/guided.ts';
+import { applyModel, applyUser, initialState, restore } from '../src/domain.ts';
+import { actionMeaning, operationFeedback, currentNext, exactArtifact, pendingNext, proposeNext, transition } from '../src/guided.ts';
 import type { Edge, Next } from '../src/guided-schema.ts';
 import type { Contract, Observation } from '../src/units.ts';
 
@@ -58,6 +58,47 @@ test('revision, experiment, design-return and correction loops preserve history 
   assert.equal(s.units[0].phase, 'judgment');
   assert.equal(s.issues[0].revisions.length, 2);
   assert.throws(() => transition(s, next({ type: 'start' }), observation), /scope discussion/);
+});
+
+test('newer saved revision is the explicit default target and exact repair works directly from judgment', () => {
+  let s = design();
+  s = transition(s, next({ type: 'revise', note: '見直す' }), observation);
+  s = transition(s, next({ type: 'critique', text: '現在の案 r2' }), observation);
+  s = applyModel(s, { type: 'critique', issueId: 1, revision: 2, category: 'uncertainty', text: '読者の条件', evidence: '読者が前提を知らない場合', status: 'open' });
+  s = applyModel(s, { type: 'draft', issueId: 1, text: '読者の視点を加えた修正案 r3' });
+  s = applyModel(s, { type: 'critique', issueId: 1, revision: 3, category: 'uncertainty', text: '修正案にも残る具体例の不足', evidence: '具体例が読者に通じない場合', status: 'open' });
+  s = transition(s, next({ type: 'revise', note: '再検討' }), observation);
+  const p = currentNext(s, observation)!;
+  assert.deepEqual(p.edge, { type: 'critique', text: '読者の視点を加えた修正案 r3' });
+  assert.notEqual(actionMeaning(p.edge, s).label, actionMeaning({ type: 'critique' }, s).label);
+  assert.match(exactArtifact(s, p, observation), /今回の検討対象への記録:[\s\S]*修正案にも残る具体例の不足/);
+  assert.match(exactArtifact(s, p, observation), /以前の案への記録[\s\S]*読者の条件/);
+  assert.match(actionMeaning({ type: 'critique' }, s).effect, /変更せず/);
+  s = transition(s, next({ type: 'critique' }), observation);
+  s = transition(s, next({ type: 'decide' }), observation);
+  const before = structuredClone(s);
+  const planned = proposeNext(s, p, observation);
+  assert.equal(planned.issues[0].currentRevision, 2, 'a proposal is not approval');
+  const repaired = transition(s, p, observation);
+  assert.doesNotMatch(operationFeedback(s, repaired, p, 'planned'), /適用しました|保持しました|記録していません/);
+  assert.match(operationFeedback(s, repaired, p), /適用しました/);
+  assert.equal(repaired.issues[0].currentRevision, 3);
+  assert.equal(repaired.issues[0].revisions.length, 3, 'reuse exact saved draft');
+  assert.equal(repaired.issues[0].inner, 'critique');
+  assert.deepEqual(repaired.issues[0].critiques, before.issues[0].critiques);
+  assert.deepEqual(repaired.issues[0].judgments, before.issues[0].judgments);
+  assert.deepEqual(repaired.units, before.units);
+  assert.deepEqual(s, before);
+});
+
+test('scope default start displays the newer saved contract instead of silently authorizing the old scope', () => {
+  let s = transition(design(), next({ type: 'scope', contract }), observation);
+  const revised = { ...contract, scope: '更新後の限定範囲' };
+  s = applyModel(s, { type: 'unitDraft', unitId: 1, contract: revised }, observation);
+  const p = currentNext(s, observation)!;
+  assert.deepEqual(p.edge, { type: 'start', contract: revised });
+  assert.match(exactArtifact(s, p, observation), /更新後の限定範囲/);
+  assert.equal(s.units[0].phase, 'scope', 'offering the revised scope grants no implementation permission');
 });
 
 test('exact acceptance card retains payload, missing evidence and source limitations; unknown is not fresh', () => {

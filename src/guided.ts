@@ -35,11 +35,12 @@ export function transition(state: State, proposal: Next, observation?: Observati
     }
     case 'critique': {
       explore();
-      require(i!.inner === 'hypothesis' || i!.inner === 'critique', 'Return to forming the proposal before changing the review target.');
+      require(i!.inner !== 'judgment' || e.text !== undefined, 'Supply the exact revised target to return directly from judgment.');
       const r = currentRevision(i!);
       if (e.text !== undefined && e.text !== r?.text) {
-        model({ type: 'draft', issueId: i!.id, text: e.text });
-        user({ type: 'confirmDraft', issueId: i!.id, revision: issueById(s, i!.id).revisions.length });
+        const saved = i!.revisions.findLast(r => !r.confirmed && r.text === e.text);
+        if (!saved) model({ type: 'draft', issueId: i!.id, text: e.text });
+        user({ type: 'confirmDraft', issueId: i!.id, revision: saved?.revision ?? issueById(s, i!.id).revisions.length });
       }
       require(currentRevision(issueById(s, i!.id))?.confirmed, 'Organize an exact proposal before examining it.');
       user({ type: 'phase', whole: 'explore', inner: 'critique' }); break;
@@ -140,9 +141,13 @@ export function defaultNext(s: State, o?: Observation): Next | undefined {
   const i = activeIssue(s), u = activeUnit(s);
   let edge: Edge | undefined;
   if (s.whole === 'explore' && i && currentRevision(i)) {
-    edge = i!.inner === 'hypothesis' ? { type: 'critique' } : i!.inner === 'critique' ? { type: 'decide' } : undefined;
+    const draft = i.revisions.findLast(r => !r.confirmed && r.revision > i.currentRevision!);
+    edge = draft ? { type: 'critique', text: draft.text } : i.inner === 'hypothesis' ? { type: 'critique' } : i.inner === 'critique' ? { type: 'decide' } : undefined;
   } else if (s.whole === 'implementation' && u) {
-    if (u.phase === 'scope' && unitRevision(u)) edge = { type: 'start' };
+    if (u.phase === 'scope' && unitRevision(u)) {
+      const draft = u.revisions.findLast(r => !r.confirmed && r.revision > u.currentRevision!);
+      edge = draft ? { type: 'start', contract: draft.contract } : { type: 'start' };
+    }
     else if (u.phase === 'implementing') edge = { type: 'inspect' };
     else if (u.phase === 'examination') edge = { type: 'accept', note: '' };
     else if (u.phase === 'judgment') edge = unitJudgment(u, o)?.decision === 'accept' ? { type: 'review' } : { type: 'inspect' };
@@ -161,11 +166,17 @@ export function workTitle(s: State): string {
   const wholeTitles: Partial<Record<State['whole'], string>> = { goals: '目標と制約を整理する', issues: '次に考える論点を選ぶ', consistency: '全体のつながりを見直す', summary: '決定と残った課題をまとめる' };
   return wholeTitles[s.whole] ?? '現在の相談';
 }
-export function actionMeaning(e: Edge): { label: string; effect: string } {
+export function actionMeaning(e: Edge, s?: State): { label: string; effect: string } {
   switch (e.type) {
     case 'goals': return { label: 'この目標・制約で論点を考える', effect: '表示した目標と制約を記録し、論点を選ぶ相談へ進みます。' };
     case 'issue': return { label: 'この論点の案を考える', effect: '表示した論点を現在の検討対象にします。仮説の採用ではありません。' };
-    case 'critique': return { label: 'この案を批判・弁護してみる', effect: '表示した正確な案を検討対象として記録し、前提と弱点を調べます。採用・実装許可ではありません。' };
+    case 'critique': {
+      const issue = s && activeIssue(s);
+      const changed = e.text !== undefined && (!issue || e.text !== currentRevision(issue)?.text);
+      return changed
+        ? { label: 'この修正案を検討対象にして批判・弁護する', effect: '表示した正確な修正案を現在の検討対象として確定し、批判・弁護へ移ります。以前の案・批判・判断は履歴に残ります。採用・実装許可・結果の受け入れではありません。' }
+        : { label: '現在の案を変えずに批判・弁護する', effect: '現在の検討対象を変更せず、批判・弁護へ移ります。新しい下書きは適用しません。採用・実装許可・結果の受け入れではありません。' };
+    }
     case 'decide': return { label: 'この案の採否を考える', effect: '同じ案と懸念をもとに方向を決める相談へ進みます。まだ採用しません。' };
     case 'adopt': return { label: 'この方向を暫定採用し、範囲を考える', effect: '現在の案を暫定採用として記録します。実装は許可しません。次に範囲を具体化します。' };
     case 'revise': return { label: 'この案を練り直す', effect: '修正する判断を記録し、案を考える相談へ戻ります。過去の案・批判は残します。' };
@@ -183,6 +194,14 @@ export function actionMeaning(e: Edge): { label: string; effect: string } {
     case 'switchUnit': return { label: 'この作業の相談に戻る', effect: '表示した単位の相談に戻ります。実装中だった単位も範囲の確認に戻し、実装を自動再開しません。' };
   }
 }
+export function operationFeedback(before: State, after: State, p: Next, status: 'planned' | 'applied' = 'applied'): string {
+  const label = actionMeaning(p.edge, before).label;
+  const i = activeIssue(after), old = activeIssue(before);
+  const target = p.edge.type === 'critique' && i
+    ? `検討対象: r${old?.currentRevision ?? '—'} → r${i.currentRevision}（${old?.currentRevision === i.currentRevision ? '内容変更なし' : '表示した正確な修正案を適用'}）\n${currentRevision(i)?.text}\n${status === 'applied' ? '採用・実装許可・結果の受け入れは記録していません。過去の批判・判断は保持しました。' : '採用・実装許可・結果の受け入れは記録しません。過去の批判・判断は保持します。'}\n`
+    : '';
+  return `${status === 'applied' ? '適用しました' : '承認すると'}: ${label}\n${target}${status === 'applied' ? '現在の相談' : '承認後の相談'}: ${workTitle(after)}`;
+}
 export function exactArtifact(s: State, p: Next, o?: Observation): string {
   const e = p.edge, i = activeIssue(s), u = activeUnit(s);
   let artifact = '';
@@ -196,7 +215,13 @@ export function exactArtifact(s: State, p: Next, o?: Observation): string {
     artifact = `論点: ${target.text}\n案:\n${currentRevision(target)?.text ?? 'まだなし'}\n現在の判断: ${currentJudgment(target)?.decision ?? '未判断'}`;
   } else if (e.type === 'switchUnit') artifact = unitDetails(unitById(s, e.unitId), o);
   else if (s.whole === 'implementation' && u) artifact = e.type === 'start' ? contractText(u) : unitDetails(u, o);
-  else if (i && s.whole === 'explore') artifact = `論点: ${i.text}\n\n検討対象の正確な案:\n${e.type === 'critique' && e.text !== undefined ? e.text : currentRevision(i)?.text ?? 'まだなし'}\n\n${e.type === 'critique' && e.text !== undefined && e.text !== currentRevision(i)?.text ? '以前の案への懸念（今回の案へ自動継承しません）' : '未撤回の懸念（根拠・条件付き）'}:\n${concerns(i).map(c => `[${c.category}] ${c.text}\n${c.evidence}`).join('\n\n') || '記録なし（正しさの保証ではありません）'}\n\n${e.type === 'critique' && e.text !== undefined && e.text !== currentRevision(i)?.text ? '以前の案への弁護・応答（今回の案へ自動継承しません）' : '弁護・応答'}:\n${i.responses.filter(r => r.revision === i.currentRevision).map(r => `[${r.author}] ${r.text}`).join('\n\n') || '記録なし'}`;
+  else if (i && s.whole === 'explore') {
+    const changed = e.type === 'critique' && e.text !== undefined && e.text !== currentRevision(i)?.text;
+    const saved = changed && e.type === 'critique' ? i.revisions.findLast(r => !r.confirmed && r.text === e.text) : currentRevision(i);
+    const discussion = (revision: number | null) => `未撤回の懸念（根拠・条件付き）:\n${concerns(i, revision).map(c => `[${c.category}] ${c.text}\n${c.evidence}`).join('\n\n') || '記録なし（正しさの保証ではありません）'}\n\n弁護・応答:\n${i.responses.filter(r => r.revision === revision).map(r => `[${r.author}] ${r.text}`).join('\n\n') || '記録なし'}`;
+    artifact = `論点: ${i.text}\n\n検討対象の正確な案:\n${e.type === 'critique' && e.text !== undefined ? e.text : currentRevision(i)?.text ?? 'まだなし'}\n\n今回の検討対象への記録:\n${saved ? discussion(saved.revision) : 'まだ記録なし（正しさの保証ではありません）'}${changed ? `\n\n以前の案への記録（今回の案へ自動継承しません。履歴は保持）:\n${discussion(i.currentRevision)}` : ''}`;
+  }
   else artifact = `目標: ${s.goal || '未設定'}\n制約: ${s.constraints || '未設定'}\n\n${s.issues.map(i => `${i.text}\n案: ${currentRevision(i)?.text ?? 'なし'}\n判断: ${currentJudgment(i)?.decision ?? '未判断'}\n残った懸念: ${concerns(i).map(c => c.text).join(' / ') || '記録なし'}`).join('\n\n')}\n\n${s.units.map(u => `${unitRevision(u)?.contract.title ?? '未確認の範囲'}: ${unitJudgment(u, o)?.decision ?? '現在の受け入れなし'} / ${evidenceFreshness(u, o)}`).join('\n')}`;
-  return `${p.summary}\n\n未解決・留保:\n${p.unresolved || '追加の記載なし（解決済みの保証ではありません）'}\n\n${artifact}${'note' in e ? `\n\n今回記録する理由・留保（AI整理、選択により本人判断）:\n${e.note || '追記なし'}` : ''}`;
+  const origin = e.type === 'critique' && i ? `変更前の検討対象 r${i.currentRevision ?? '—'}:\n${currentRevision(i)?.text ?? 'まだなし'}\n\n` : '';
+  return `${origin}${p.summary}\n\n未解決・留保:\n${p.unresolved || '追加の記載なし（解決済みの保証ではありません）'}\n\n${artifact}${'note' in e ? `\n\n今回記録する理由・留保（AI整理、選択により本人判断）:\n${e.note || '追記なし'}` : ''}`;
 }
