@@ -9,7 +9,7 @@ function setup() {
   return applyUser(s, { type: 'hypothesis', issueId: 1, text: 'Validate at the boundary' });
 }
 
-test('only explicit user operations select phases and decisions; proposals are not adoption', () => {
+test('record-only model writes cannot select phases or decisions; proposals are not adoption', () => {
   const s = setup();
   const proposed = applyModel(s, { type: 'proposal', text: 'Adopt and move to summary' });
   assert.equal(proposed.whole, 'goals');
@@ -22,7 +22,7 @@ test('only explicit user operations select phases and decisions; proposals are n
   assert.equal(applyUser(judged, { type: 'phase', whole: 'issues' }).whole, 'issues');
 });
 
-test('drafts cannot replace human current revision; new revisions do not inherit judgment or criticism', () => {
+test('record-only drafts cannot replace current revision; new revisions do not inherit judgment or criticism', () => {
   let s = setup();
   s = applyModel(s, { type: 'critique', issueId: 1, revision: 1, category: 'security', text: 'Missing length bound', evidence: 'Unbounded input reaches parser', status: 'open' });
   s = applyUser(s, { type: 'judge', issueId: 1, decision: 'adopt', note: 'Accept risk' });

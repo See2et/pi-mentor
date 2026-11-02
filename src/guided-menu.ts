@@ -29,7 +29,7 @@ export async function guidedMenu(ctx: ExtensionCommandContext, owner: GuidedOwne
     return;
   }
   let proposal = currentNext(s, o);
-  const organize = () => owner.ask('[Mentor: organize next action]\nContinue our current discussion without advancing it. Help me with a suitable graduated hint or a focused question, then organize the current artifact and unresolved matters. When concrete enough, use mentor_next with the latest snapshot to prepare ONE meaningful next-action card. This request does not select an edge, adopt anything, authorize implementation or accept a result.');
+  const organize = () => owner.ask('[Mentor: organize next action]\nContinue our discussion with a suitable hint or concrete question, then organize the artifact and unresolved matters. Use mentor_discuss only for bounded discussion movement after addressing the current stage, with brief disclosure. At a human decision point, offer ONE exact mentor_assist approval or prepare an optional mentor_next card. This request never adopts, confirms scope, authorizes implementation, accepts a result or requests a stage skip.');
   for (;;) {
     const meaning = proposal && actionMeaning(proposal.edge, s);
     const body = proposal ? `次にすること: ${meaning!.label}\n選ぶと: ${meaning!.effect}\n\n候補（詳細はスクロール）:\n${exactArtifact(s, proposal, o)}` : `ここでは普通のチャットで相談を続けます。\n${s.guided?.pending ? '前の候補は記録またはコードが変わったため使えません。整理し直してください。' : '次の一手はまだ整理されていません。AIが会話から目標・案・未解決事項をまとめます。'}\n\n「次の一手を一緒に整理する」は相談だけを始め、何も確定しません。ヒントや別の進み方は「その他…」から選べます。`;

@@ -101,7 +101,7 @@ test('latest human judgment is never bypassed when source observation returns', 
       assert.doesNotMatch(display, /このスコープを受け入れる/);
       assert.ok(mentorContext(s, source)!.includes(record.judgmentStatus));
       assert.ok(unitDetails(s.units[0], source).includes(record.judgmentStatus));
-      assert.ok(widgetLines(s, 120, undefined, source).join('').includes(record.judgmentStatus));
+      assert.match(widgetLines(s, 120, undefined, source).join(''), /結果の判断 → 結果の再検討/, 'compact phase widget must not suggest whole review from an older acceptance');
       for (const line of widgetLines(s, 36, undefined, source)) assert.ok(visibleWidth(line) <= 36);
       assert.equal(s.units[0].judgments.length, 2);
     }

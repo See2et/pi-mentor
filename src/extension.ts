@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Text } from '@earendil-works/pi-tui';
 import { Type } from 'typebox';
-import { ModelActionSchema, StateSchema, applyModel, applyUser, compactRecord, initialState, mentorContext, restore, type State, type UserAction } from './domain.ts';
+import { DiscussionActionSchema, applyDiscussion, ModelActionSchema, StateSchema, applyModel, applyUser, compactRecord, initialState, mentorContext, restore, type State, type UserAction } from './domain.ts';
 import { mentorMenu } from './menu.ts';
 import { guidedMenu, type GuidedOwner } from './guided-menu.ts';
 import { actionMeaning, operationFeedback, exactArtifact, sourceIdentity, proposeNext, transition, workTitle } from './guided.ts';
@@ -21,6 +21,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
   let activity = 0;
   let approvalOpen = false;
   let inputVersion = 0;
+  let declinedInputVersion: number | undefined;
   let latestInput: { text: string; source: 'interactive' | 'rpc' } | undefined;
   const token = () => `${sessionId}/${epoch}/${state.sequence}:${sourceIdentity(observation)}`;
   const refresh = (ctx: ExtensionContext) => {
@@ -50,6 +51,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
     sessionId = ctx.sessionManager.getSessionId();
     epoch++;
     latestInput = undefined;
+    declinedInputVersion = undefined;
     inputVersion++;
     inFlight.clear();
     refresh(ctx);
@@ -73,7 +75,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
     return { action: 'continue' };
   });
   pi.on('tool_execution_start', (event, ctx) => {
-    if (!['mentor_status', 'mentor_record', 'mentor_next', 'mentor_assist'].includes(event.toolName)) { inFlight.add(event.toolCallId); activity++; }
+    if (!['mentor_status', 'mentor_record', 'mentor_next', 'mentor_assist', 'mentor_discuss'].includes(event.toolName)) { inFlight.add(event.toolCallId); activity++; }
     refresh(ctx); paint(ctx);
   });
   pi.on('tool_execution_end', (event, ctx) => {
@@ -143,7 +145,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
   });
   pi.registerTool({
     name: 'mentor_status', label: 'Mentor status',
-    description: 'Read Mentor current state and complete version/critique/response/judgment history on the active branch. Returns latest snapshot for mentor_record. Read-only; works while paused. User controls progression through /mentor cards or a one-time native approval of a typed mentor_assist card operation; ordinary chat never authorizes progression.',
+    description: 'Read Mentor current state and complete version/critique/response/judgment history on the active branch. Returns latest snapshot for mentor_record. Read-only; works while paused. AI may organize bounded discussion movement with mentor_discuss. Consequential operations and stage skips require /mentor selection or one native mentor_assist approval; ordinary chat never authorizes those.',
     parameters: Type.Object({}, { additionalProperties: false }),
     outputSchema: Type.Object({ snapshot: Type.String(), paused: Type.Boolean(), error: Type.Optional(Type.String()), sourceObservation: Type.Unknown(), record: StateSchema }),
     annotations: { readOnlyHint: true, openWorldHint: false },
@@ -174,17 +176,19 @@ export default function mentorExtension(pi: ExtensionAPI): void {
   });
   pi.registerTool({
     name: 'mentor_assist', label: 'Mentor one-time card approval', exposure: 'model-only',
-    description: 'Only on an explicit user request for a Mentor card operation or flow assistance, propose ONE typed normal card operation and ask for native one-time approval of its exact content and consequences. Every domain-valid edge in the proposal schema is eligible, with the same preconditions and authority as selecting that normal /mentor card. Do not call for acknowledgement, ordinary questions or quoted requests. Host-observed input is context, NOT consent; only affirmative native approval authorizes this exact operation. No /mentor phase/revision forms needed. Do not retry cancelled/rejected approval without a fresh explicit user request. Adoption is not implementation permission; start/correct authorize only the displayed exact contract; acceptance binds displayed contract/source/evidence/missing evidence/limitations, never starts another unit or adopts an experiment as a design. No advanced reset/pause, arbitrary action arrays, blanket delegation or automatic follow-up. Cancel/stale/noUI/paused/other tool activity apply nothing. Requires latest snapshot. TUI only. Returns actual label, effect and applied/cancelled/rejected status; never claim a proposal was applied.',
+    description: 'At an appropriate human decision point (or on an explicit operation/skip request), offer ONE typed normal card operation and ask for native one-time approval of its exact content and consequences. The user need not request an internal operation first. Every domain-valid edge in the proposal schema is eligible, with the same preconditions and authority as selecting that normal /mentor card. Do not interpret acknowledgement, ordinary questions or quoted requests as approval or as fresh intent to retry a cancelled request. Host-observed input is context, NOT consent; only affirmative native approval authorizes this exact operation. No /mentor phase/revision forms needed. Do not retry cancelled/rejected approval without a fresh explicit user request. Adoption is not implementation permission; start/correct authorize only the displayed exact contract; acceptance binds displayed contract/source/evidence/missing evidence/limitations, never starts another unit or adopts an experiment as a design. No advanced reset/pause, arbitrary action arrays, blanket delegation or automatic follow-up. Cancel/stale/noUI/paused/other tool activity apply nothing. Requires latest snapshot. TUI only. Returns actual label, effect and applied/cancelled/rejected status; never claim a proposal was applied.',
     parameters: Type.Object({ expectedSnapshot: Type.String(), proposal: NextSchema }, { additionalProperties: false }),
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async execute(_id, params, signal, _update, ctx) {
       let ownsApproval = false;
+      let approvalInputVersion: number | undefined;
       try {
         if (!ctx.hasUI || ctx.mode !== 'tui') throw new Error('Native Mentor approval requires interactive TUI; no change applied.');
         if (approvalOpen || inFlight.size) throw new Error('Mentor approval or other tool activity is busy; no change applied.');
         if (signal?.aborted) throw new Error('Mentor assistance cancelled; no change applied.');
         check(params.expectedSnapshot, ctx);
         if (!latestInput) throw new Error('No host-observed real user input for this request; no change applied.');
+        if (declinedInputVersion === inputVersion) throw new Error('Mentor approval was cancelled or rejected on this input. Wait for fresh explicit user intent before offering it again.');
         const proposal = structuredClone(params.proposal);
         const planned = transition(state, proposal, observation);
         const meaning = actionMeaning(proposal.edge, state);
@@ -192,10 +196,11 @@ export default function mentorExtension(pi: ExtensionAPI): void {
         const expected = token(), version = inputVersion, toolsVersion = activity, leaf = ctx.sessionManager.getLeafId();
         const request = structuredClone(latestInput);
         const body = `実際の直近入力 (${request.source}、依頼の文脈のみ・承認ではない):\n${request.text}\n\nセッション: ${sessionId}\n記録: ${state.sequence} / 枝の末尾: ${leaf ?? 'なし'}\n最終確認ソース: ${sourceIdentity(observation)}\n（最終確認時の一致のみ。原子的・ライブ監視ではありません）\n\n現在の相談: ${workTitle(state)}\n適用後の相談: ${workTitle(planned)}\n操作: ${meaning.label}\n選ぶと: ${meaning.effect}\n\n${exactArtifact(state, proposal, observation)}\n\n承認した場合の変更:\n${operationFeedback(state, planned, proposal, 'planned')}\n\n表示した内容の、この操作一回だけを承認します。通常の /mentor カードで同じ操作を選ぶ場合と同じ権限・変更です。後続の操作や次の単位の開始は承認しません。`;
-        approvalOpen = true; ownsApproval = true;
+        approvalOpen = true; ownsApproval = true; approvalInputVersion = version;
         const choice = await actionCard(ctx, 'Mentor 操作の一回限りの承認', body, meaning.label, { signal });
         if (signal?.aborted) throw new Error('Mentor assistance cancelled; no change applied.');
         if (choice !== 'edge') {
+          declinedInputVersion = version;
           const data = { ...result(), operationStatus: 'cancelled', ...meaning };
           return { content: [{ type: 'text', text: JSON.stringify(data) }], details: data, structuredContent: JSON.parse(JSON.stringify(data)) };
         }
@@ -206,10 +211,35 @@ export default function mentorExtension(pi: ExtensionAPI): void {
         const data = { ...result(), operationStatus: 'applied', ...meaning, feedback };
         return { content: [{ type: 'text', text: JSON.stringify(data) }], details: data, structuredContent: JSON.parse(JSON.stringify(data)) };
       } catch (failure) {
+        if (ownsApproval) declinedInputVersion = approvalInputVersion;
         const data = { ...result(), operationStatus: signal?.aborted ? 'cancelled' : 'rejected', operationError: failure instanceof Error ? failure.message : String(failure) };
         return { content: [{ type: 'text', text: JSON.stringify(data) }], details: data, structuredContent: JSON.parse(JSON.stringify(data)), isError: true };
       } finally {
         if (ownsApproval) approvalOpen = false;
+      }
+    },
+  });
+  pi.registerTool({
+    name: 'mentor_discuss', label: 'Mentor discussion update',
+    description: 'Organize the ordinary discussion from the actual conversation, with a short visible disclosure. ONLY goals->issues, a new issue->hypothesis, exact unconfirmed target->critique, critique->direction, or rethink within the current design discussion. Ask concrete stage questions first and address the user’s answers; never chain through stages just to advance, grade understanding, or choose a stage skip. Does not confirm a hypothesis, judge/adopt, confirm scope, start implementation, switch units, accept or leave implementation. A changed target is a new/unconfirmed revision; old critiques/judgments stay revision-bound. Use mentor_record for critiques, responses and scope drafts; mentor_assist for human decisions/skips. Latest snapshot required; rejected while paused.',
+    parameters: Type.Object({ expectedSnapshot: Type.String(), action: DiscussionActionSchema }, { additionalProperties: false }),
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    async execute(_id, params, signal, _update, ctx) {
+      try {
+        if (signal?.aborted) throw new Error('Mentor discussion update cancelled.');
+        check(params.expectedSnapshot, ctx);
+        const next = applyDiscussion(state, params.action);
+        const target = next.activeIssue === null ? undefined : next.issues.find(i => i.id === next.activeIssue);
+        const revision = target?.revisions.find(r => r.revision === target.currentRevision);
+        const title = workTitle(next).replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 80);
+        const feedback = `相談を整理: ${title}${params.action.type === 'target' ? ` · 検討対象 r${revision!.revision}（${revision!.confirmed ? '本人確認済みの案を維持' : 'AI整理・未確認'}）` : ''}。採用・実装許可・受け入れは変更していません。`;
+        persist(next, ctx);
+        if (ctx.hasUI) ctx.ui.notify(feedback, 'info');
+        const data = { ...result(), operationStatus: 'discussion-updated', feedback };
+        return { content: [{ type: 'text', text: JSON.stringify(data) }], details: data, structuredContent: JSON.parse(JSON.stringify(data)) };
+      } catch (failure) {
+        const data = { ...result(), operationError: failure instanceof Error ? failure.message : String(failure) };
+        return { content: [{ type: 'text', text: JSON.stringify(data) }], details: data, structuredContent: JSON.parse(JSON.stringify(data)), isError: true };
       }
     },
   });

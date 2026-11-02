@@ -42,7 +42,7 @@ export function transition(state: State, proposal: Next, observation?: Observati
         if (!saved) model({ type: 'draft', issueId: i!.id, text: e.text });
         user({ type: 'confirmDraft', issueId: i!.id, revision: saved?.revision ?? issueById(s, i!.id).revisions.length });
       }
-      require(currentRevision(issueById(s, i!.id))?.confirmed, 'Organize an exact proposal before examining it.');
+      require(currentRevision(issueById(s, i!.id)), 'Organize an exact proposal before examining it.');
       user({ type: 'phase', whole: 'explore', inner: 'critique' }); break;
     }
     case 'decide':
@@ -50,6 +50,8 @@ export function transition(state: State, proposal: Next, observation?: Observati
       user({ type: 'phase', whole: 'explore', inner: 'judgment' }); break;
     case 'adopt':
       explore(); require(i!.inner === 'judgment', 'Discuss the direction decision first.');
+      require(currentRevision(i!), 'Organize an exact proposal before adoption.');
+      if (!currentRevision(i!)!.confirmed) user({ type: 'confirmDraft', issueId: i!.id, revision: i!.currentRevision! });
       user({ type: 'judge', issueId: i!.id, decision: 'adopt', note: e.note });
       user({ type: 'phase', whole: 'implementation' });
       s.activeUnit = null; // A design decision must not re-authorize an earlier implementation unit.
@@ -178,7 +180,7 @@ export function actionMeaning(e: Edge, s?: State): { label: string; effect: stri
         : { label: '現在の案を変えずに批判・弁護する', effect: '現在の検討対象を変更せず、批判・弁護へ移ります。新しい下書きは適用しません。採用・実装許可・結果の受け入れではありません。' };
     }
     case 'decide': return { label: 'この案の採否を考える', effect: '同じ案と懸念をもとに方向を決める相談へ進みます。まだ採用しません。' };
-    case 'adopt': return { label: 'この方向を暫定採用し、範囲を考える', effect: '現在の案を暫定採用として記録します。実装は許可しません。次に範囲を具体化します。' };
+    case 'adopt': return { label: 'この方向を暫定採用し、範囲を考える', effect: '表示した正確な現在の案を本人確認し、暫定採用として記録します。実装は許可しません。次に範囲を具体化します。' };
     case 'revise': return { label: 'この案を練り直す', effect: '修正する判断を記録し、案を考える相談へ戻ります。過去の案・批判は残します。' };
     case 'scope': return { label: e.contract.kind === 'experiment' ? 'この実験の範囲を検討する' : 'この実装範囲を検討する', effect: '表示した範囲・期待・検証計画を記録します。まだ実装・実験を開始せず、設計の採用も変えません。' };
     case 'start': return { label: 'この範囲で実装・検証を始める', effect: '表示した正確な範囲・期待・非目標・検証計画を確定し、この単位だけの実装・検証を明示的に許可します。' };
