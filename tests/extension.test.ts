@@ -115,6 +115,13 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd()) {
   mentorExtension(api);
   return h;
 }
+test('next-card drafting is discoverable through codemode, while native approval is model-only', () => {
+  const h = harness();
+  assert.equal(h.tools.get('mentor_next').exposure, 'codemode');
+  assert.equal(h.tools.get('mentor_next').namespace.name, 'mentor');
+  assert.equal(h.tools.get('mentor_assist').exposure, 'model-only');
+});
+
 async function prepared() {
   const h = harness();
   await h.emit('session_start');

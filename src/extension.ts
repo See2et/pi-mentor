@@ -138,6 +138,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
     },
   });
 
+  const namespace = { name: 'mentor', description: 'Mentor records and /mentor card drafts. Discover schemas with describeTool; serialize writes with the latest snapshot. Native approval uses mentor_assist, never scripts.' };
   const result = (full = false) => ({
     snapshot: token(), paused: !state.enabled, error,
     sourceObservation: observation,
@@ -157,7 +158,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
     },
   });
   pi.registerTool({
-    name: 'mentor_next', label: 'Mentor next-action draft',
+    name: 'mentor_next', label: 'Mentor next-action draft', exposure: 'codemode', namespace,
     description: 'Draft ONE exact typed /mentor card; never apply its effects. Latest snapshot required; call last after records/evidence (state/source changes stale it). Include summary and unresolved matters. Only user selection of the returned label—not summary—applies atomically, with no later confirmation. adopt is direction only; scope does not start; start/correct authorize only the exact unit contract; accept binds contract/source/evidence/limitations, never starts work or adopts an experiment as design. No automatic transitions or grading.',
     parameters: Type.Object({ expectedSnapshot: Type.String(), proposal: NextSchema }, { additionalProperties: false }),
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
