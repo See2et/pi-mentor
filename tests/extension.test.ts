@@ -17,6 +17,7 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd()) {
   const commands = new Map<string, any>();
   const h = {
     manager, events, tools, commands,
+    activeTools: ['read', 'unrelated_extension_tool'] as string[],
     choices: [] as (string | undefined)[], edits: [] as (string | undefined)[], confirmations: [] as boolean[],
     notices: [] as string[], requests: [] as string[],
     menus: [] as { title: string; options: string[] }[], inspections: [] as string[][],
@@ -106,7 +107,12 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd()) {
   const api = {
     on: (name: string, handler: Handler) => events.set(name, handler),
     registerCommand: (name: string, command: unknown) => commands.set(name, command),
-    registerTool: (tool: any) => tools.set(tool.name, tool),
+    registerTool: (tool: any) => {
+      tools.set(tool.name, tool);
+      if (tool.defaultActive !== false && ['direct', 'model-only'].includes(tool.exposure ?? 'direct')) h.activeTools.push(tool.name);
+    },
+    getActiveTools: () => [...h.activeTools],
+    setActiveTools: (names: string[]) => { h.activeTools = [...names]; },
     registerMessageRenderer() {},
     appendEntry: (kind: string, data: unknown) => h.manager.appendCustomEntry(kind, data),
     sendMessage: (message: any) => h.manager.appendCustomMessageEntry(message.customType, message.content, message.display, message.details),
@@ -170,6 +176,46 @@ test('status defaults to an explicit current projection and retrieves complete t
   await h.record({ type: 'unitReport', unitId: 1, revision: 1, text: 'Observed limitations' });
   assert.deepEqual((await h.status({ view: 'unit', unitId: 1 })).record.unit, (await h.status()).record.units[0]);
   assert.ok(h.manager.getEntries().length > before);
+});
+
+test('pause and restored sessions remove direct Mentor tools without changing unrelated selection', async () => {
+  const h = harness();
+  const direct = () => h.activeTools.filter(n => n.startsWith('mentor_')).sort();
+  assert.deepEqual(direct(), []);
+  await h.emit('session_start'); await h.command('resume');
+  assert.deepEqual(direct(), ['mentor_assist', 'mentor_discuss']);
+  h.activeTools = h.activeTools.filter(n => n !== 'read');
+  h.activeTools.push('another_extension_tool', 'mentor_record');
+  const enabledManager = h.manager;
+  await h.command('pause');
+  assert.deepEqual(direct(), []);
+  assert.deepEqual(h.activeTools, ['unrelated_extension_tool', 'another_extension_tool']);
+  const pausedLeaf = h.manager.getLeafId()!;
+  await h.emit('session_compact'); await h.emit('session_tree');
+  assert.deepEqual(direct(), []);
+  assert.ok((await h.status({})).snapshot, 'codemode status remains callable while paused');
+  for (const call of [() => h.record({ type: 'proposal', text: 'No' }), () => h.discuss({ type: 'direction' }), () => h.next({ summary: 'No', unresolved: '', edge: { type: 'review' } })]) assert.equal((await call()).isError, true);
+  await h.command('resume');
+  assert.deepEqual(direct(), ['mentor_assist', 'mentor_discuss']);
+  h.manager = SessionManager.inMemory(); await h.emit('session_start');
+  assert.deepEqual(direct(), []);
+  h.manager = enabledManager; h.manager.branch(pausedLeaf); await h.emit('session_start');
+  assert.deepEqual(direct(), []);
+  await h.command('resume');
+  assert.deepEqual(h.activeTools.filter(n => !n.startsWith('mentor_')), ['unrelated_extension_tool', 'another_extension_tool']);
+});
+
+test('codemode container allows observed nested status but nested writes make source unknown and approvals stay blocked', async () => {
+  const h = await stuck();
+  await h.emit('tool_execution_start', { toolCallId: 'code', toolName: 'codemode' });
+  assert.ok((await h.status({})).sourceObservation.source);
+  assert.equal((await h.assist(repair)).isError, true);
+  await h.emit('tool_execution_start', { toolCallId: 'code/1', parentToolCallId: 'code', toolName: 'bash' });
+  assert.equal((await h.status({})).sourceObservation.source, undefined);
+  await h.emit('tool_execution_end', { toolCallId: 'code/1', parentToolCallId: 'code', toolName: 'bash' });
+  assert.ok((await h.status({})).sourceObservation.source);
+  assert.equal((await h.record({ type: 'proposal', text: 'nested record' })).isError, undefined);
+  await h.emit('tool_execution_end', { toolCallId: 'code', toolName: 'codemode' });
 });
 
 async function prepared() {
