@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { SessionManager, type ExtensionAPI, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import mentorExtension from '../index.ts';
-import { currentJudgment, location } from '../src/domain.ts';
+import { currentJudgment, location, initialState, applyUser, applyModel, mentorContext, GUIDANCE } from '../src/domain.ts';
 import { unitJudgment, evidenceFreshness } from '../src/units.ts';
 
 type Handler = (...args: any[]) => any;
@@ -150,6 +150,11 @@ test('mutations return deltas and recovery, not repeated record history', async 
   assert.deepEqual(r.details.recorded, { type: 'proposal', proposalId: 1 });
   assert.equal(r.details.record, undefined);
   assert.ok(r.details.snapshot);
+  for (let n = 0; n < 8; n++) {
+    const next = await h.record({ type: 'proposal', text: 'Historical proposal content '.repeat(100) });
+    assert.ok(JSON.stringify(next.details).length - JSON.stringify(r.details).length < 200, 'mutation output stays independent of saved history');
+    assert.equal(next.details.record, undefined);
+  }
   const failed = await h.record({ type: 'proposal', text: 'stale' }, 'old');
   assert.equal(failed.isError, true);
   assert.equal(failed.details.record, undefined);
@@ -176,6 +181,33 @@ test('status defaults to an explicit current projection and retrieves complete t
   await h.record({ type: 'unitReport', unitId: 1, revision: 1, text: 'Observed limitations' });
   assert.deepEqual((await h.status({ view: 'unit', unitId: 1 })).record.unit, (await h.status()).record.units[0]);
   assert.ok(h.manager.getEntries().length > before);
+});
+
+test('registered declarations and enabled phase contexts stay within practical character budgets', t => {
+  const h = harness();
+  const declarations = Object.fromEntries([...h.tools.values()].map(tool => [tool.name, JSON.stringify({ name: tool.name, description: tool.description, parameters: tool.parameters }).length]));
+  for (const [name, limit] of Object.entries({ mentor_next: 6100, mentor_assist: 6300, mentor_record: 5400, mentor_discuss: 1850, mentor_status: 1200 })) {
+    assert.ok(declarations[name] < limit, `${name}: ${declarations[name]} chars`);
+  }
+  let s = applyUser(initialState(), { type: 'resume' });
+  const contexts: Record<string, number> = { initial: mentorContext(s)!.length };
+  s = applyUser(s, { type: 'issue', text: 'Input boundary' });
+  s = applyUser(s, { type: 'select', issueId: 1 });
+  s = applyUser(s, { type: 'phase', whole: 'explore', inner: 'critique' });
+  s = applyUser(s, { type: 'hypothesis', issueId: 1, text: 'Validate input at boundary' });
+  s = applyModel(s, { type: 'critique', issueId: 1, revision: 1, category: 'security', text: 'Unbounded input', evidence: 'Parser receives user strings', status: 'open' });
+  contexts.populated = mentorContext(s)!.length;
+  s = applyUser(s, { type: 'unitContract', contract: { ...unitContract, kind: 'feature' } });
+  s = applyUser(s, { type: 'selectUnit', unitId: 1 });
+  s = applyUser(s, { type: 'phase', whole: 'implementation' });
+  for (const phase of ['scope', 'implementing', 'examination', 'judgment'] as const) {
+    s = applyUser(s, { type: 'unitPhase', unitId: 1, phase });
+    contexts[phase] = mentorContext(s)!.length;
+    assert.ok(contexts[phase] < 10000, `${phase}: ${contexts[phase]} chars`);
+  }
+  assert.ok(contexts.initial < 6200);
+  assert.ok(contexts.populated < 7500);
+  t.diagnostic(JSON.stringify({ declarations, guidance: GUIDANCE.length, contexts }));
 });
 
 test('pause and restored sessions remove direct Mentor tools without changing unrelated selection', async () => {

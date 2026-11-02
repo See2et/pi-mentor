@@ -15,6 +15,22 @@ function setup() {
   return applyUser(s, { type: 'selectUnit', unitId: 1 });
 }
 const evidence = { type: 'unitEvidence' as const, unitId: 1, revision: 1, sourceHash: source.source!.hash, entries: [{ expectationId: 'E1', observation: '長すぎる入力が拒否された', references: ['node check.ts; exit 0'], method: 'real' as const, limitations: '本番依存は未確認' }], concerns: '本番依存の挙動は未知' };
+test('unit projections keep exact current contracts and evidence while non-current history stays summarized', () => {
+  let s = setup();
+  const longScope = 'Current exact scope '.repeat(250);
+  s = applyUser(s, { type: 'unitContract', unitId: 1, contract: { ...contract, scope: longScope } });
+  for (let n = 0; n < 5; n++) s = applyModel(s, { ...evidence, revision: 2, concerns: `Unresolved concern ${n}` }, source);
+  s = applyUser(s, { type: 'unitContract', contract: { ...contract, title: 'Other unit' } });
+  const before = JSON.stringify(compactRecord(s, source)).length;
+  for (let n = 0; n < 40; n++) s.units[1].reports.push({ revision: 1, text: 'Old non-current report '.repeat(150), author: 'ai' });
+  const projection = compactRecord(s, source);
+  assert.equal(projection.units[0].current?.contract.scope, longScope);
+  assert.equal(projection.units[0].evidence?.length, 5, 'all current-contract concerns survive, not a last-N slice');
+  assert.equal(projection.units[1].reports, undefined);
+  assert.ok(JSON.stringify(projection).length - before < 100);
+  assert.equal(s.units[1].reports.length, 40);
+});
+
 test('implementation is a human-selectable whole activity, independent of design completion', () => {
   const s = applyUser(applyUser(initialState(), { type: 'resume' }), { type: 'phase', whole: 'implementation' });
   assert.equal(s.whole, 'implementation');
