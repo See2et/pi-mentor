@@ -33,6 +33,7 @@ import { restore } from "./persistence.ts";
 import { widgetLines } from "./widget.ts";
 import {
   actionMeaning,
+  cardSummary,
   exactArtifact,
   operationFeedback,
   workTitle,
@@ -468,7 +469,14 @@ export default function mentorExtension(pi: ExtensionAPI): void {
       approvalOpen = true;
       try {
         const choice = await hostAsync(() =>
-          actionCard(ctx, "Mentor 操作の一回限りの承認", body, meaning.label, { signal }),
+          actionCard(
+            ctx,
+            "Mentor 操作の一回限りの承認",
+            body,
+            meaning.label,
+            { signal },
+            cardSummary(state, params.proposal, observation),
+          ),
         );
         // Validation and append run synchronously together after the only dialog await.
         const applied = choice.andThen((choice) =>

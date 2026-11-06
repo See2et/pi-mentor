@@ -10,6 +10,7 @@ function dialog<T>(open: (ctx: ExtensionCommandContext) => Promise<T>) {
   let rows = 12;
   const result = open({
     mode: "tui",
+    hasUI: true,
     ui: {
       custom: (factory: any) =>
         new Promise((resolve) => {
@@ -22,7 +23,7 @@ function dialog<T>(open: (ctx: ExtensionCommandContext) => Promise<T>) {
               },
               requestRender() {},
             },
-            { fg: (_: string, text: string) => text },
+            { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text },
             {},
             resolve,
           );
@@ -132,6 +133,64 @@ test("confirmation accepts only Yes and preserves cancellation", async () => {
   const cancel = dialog((ctx) => confirmMenu(ctx, "Confirm", "Exact content"));
   cancel.key("\x1b");
   assert.equal(await cancel.result, false);
+});
+
+test("compact approval separates full details and returning never approves", async () => {
+  const body = Array.from({ length: 80 }, (_, n) => `正確な対象 ${n}`).join("\n");
+  const d = dialog((ctx) =>
+    actionCard(
+      ctx,
+      "Approval",
+      body,
+      "実装を開始する",
+      {},
+      {
+        target: "承認UIの改善",
+        effect: "この範囲だけの実装を許可します。",
+        caution: "実端末は未検証",
+      },
+    ),
+  );
+  d.resize(24);
+  const compact = d.render(72);
+  assert.ok(compact[0].startsWith("╭"));
+  assert.ok(compact.length < 20);
+  assert.ok(compact.join("\n").includes("承認UIの改善"));
+  assert.ok(!compact.join("\n").includes("正確な対象 0"));
+  d.key("d");
+  assert.ok(d.render(72).join("\n").includes("正確な対象 0"));
+  d.key("\x1b[F");
+  assert.ok(d.render(72).join("\n").includes("正確な対象 79"));
+  d.key("\r"); // Return from detail, not approval.
+  assert.ok(d.render(72).join("\n").includes("承認UIの改善"));
+  d.key("\r"); // Default remains cancel.
+  assert.equal(await d.result, "continue");
+});
+
+test("card fits narrow and resized terminals, with cancellation available in details", async () => {
+  const controller = new AbortController();
+  const d = dialog((ctx) =>
+    actionCard(ctx, "承認", "全文\n".repeat(100), "長い操作名".repeat(30), {
+      signal: controller.signal,
+    }),
+  );
+  for (const [width, height] of [
+    [32, 16],
+    [20, 10],
+    [72, 24],
+  ]) {
+    d.resize(height);
+    for (const details of [false, true]) {
+      if (details) d.key("d");
+      const lines = d.render(width);
+      assert.ok(lines.length <= height - 2);
+      for (const line of lines) assert.ok(visibleWidth(line) <= width);
+      if (details) d.key("\r");
+    }
+  }
+  d.key("d");
+  controller.abort();
+  assert.equal(await d.result, undefined);
 });
 
 test("RPC keeps native selection/confirmation and card editor fallback", async () => {

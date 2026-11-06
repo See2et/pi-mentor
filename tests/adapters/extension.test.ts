@@ -73,7 +73,7 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd(), runti
             let finish: ((value: unknown) => void) | undefined;
             const component = factory(
               { terminal: { rows: 28 }, requestRender() {} },
-              { fg: (_t: string, x: string) => x },
+              { fg: (_t: string, x: string) => x, bg: (_t: string, x: string) => x },
               {},
               (value: unknown) => {
                 result = value;
@@ -108,7 +108,8 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd(), runti
               return result;
             }
             h.inspections.push(component.render(36));
-            if (screen[0] === "Mentor 操作の一回限りの承認") {
+            if (screen[0].includes("Mentor · 承認待ち")) {
+              component.handleInput("d");
               const pages: string[] = [];
               for (;;) {
                 const page = component.render(10000).join("\n");
@@ -117,7 +118,7 @@ function harness(manager = SessionManager.inMemory(), cwd = process.cwd(), runti
                 component.handleInput("\x1b[6~");
               }
               h.approvalBodies.push(pages.join("\n"));
-              component.handleInput("\x1b[H");
+              component.handleInput("\r"); // Return without approving.
               return new Promise((resolve) => {
                 finish = resolve;
                 const drive = (choice: unknown) => {

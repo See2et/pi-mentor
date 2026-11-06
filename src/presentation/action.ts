@@ -163,6 +163,45 @@ export function actionMeaning(e: Edge, s?: State): { label: string; effect: stri
       };
   }
 }
+// A decision preview, not a replacement for the exact artifact bound to approval.
+export function cardSummary(s: State, p: Next, o?: Observation) {
+  const e = p.edge,
+    u = activeUnit(s);
+  const contract =
+    e.type === "scope" || (e.type === "start" && e.contract)
+      ? e.contract
+      : u && unitRevision(u)?.contract;
+  let target = focusedRevision(s)?.text;
+  if (e.type === "goals") target = e.goal;
+  else if (e.type === "issue") target = e.text;
+  else if (e.type === "switchIssue") target = s.issues.find((i) => i.id === e.issueId)?.text;
+  else if (e.type === "switchUnit") {
+    const unit = s.units.find((u) => u.id === e.unitId);
+    target = unit && unitRevision(unit)?.contract.title;
+  } else if (
+    contract &&
+    (s.whole === "implementation" || e.type === "scope" || e.type === "start")
+  ) {
+    target = `${contract.title} — ${contract.scope}`;
+  } else if (e.type === "critique" && e.text !== undefined) target = e.text;
+  const effects: Partial<Record<Edge["type"], string>> = {
+    start: "この作業範囲だけの実装・検証を許可します。",
+    correct: "現契約の範囲だけ、修正と検証を再開します。",
+    accept: "この結果を受け入れ、相談に戻ります。次の実装は始めません。",
+    adopt: "方向を暫定採用します。実装は始めません。",
+    scope: "範囲を記録します。実装・実験は始めません。",
+    inspect: "実装を止め、結果を確認する相談へ進みます。",
+  };
+  const reservations = !!p.unresolved.trim() || ("note" in e && !!e.note.trim());
+  const evidence =
+    u && ["accept", "inspect", "correct"].includes(e.type) ? `${evidenceFreshness(u, o)} · ` : "";
+  return {
+    target: target || p.summary,
+    effect: effects[e.type] ?? actionMeaning(e, s).effect,
+    caution: `${evidence}${reservations ? "留保あり" : "留保の追加記載なし"} · 正確な内容・不足は詳細で確認`,
+  };
+}
+
 export function operationFeedback(
   before: State,
   after: State,

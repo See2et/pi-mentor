@@ -7,7 +7,7 @@ import { alternativeEdges, currentNext } from "./domain/workflow.ts";
 import { hostAsync } from "./host.ts";
 import { mentorMenu, type MenuOwner } from "./menu.ts";
 import { selectMenu } from "./navigation.ts";
-import { actionMeaning, exactArtifact, workTitle } from "./presentation/action.ts";
+import { actionMeaning, cardSummary, exactArtifact, workTitle } from "./presentation/action.ts";
 import { details } from "./presentation/record.ts";
 import { inspect } from "./viewer.ts";
 
@@ -68,7 +68,20 @@ export async function guidedMenu(
         ? `次にすること: ${meaning!.label}\n選ぶと: ${meaning!.effect}\n\n候補（詳細はスクロール）:\n${yield* exactArtifact(s, proposal, o)}`
         : `ここでは普通のチャットで相談を続けます。\n${s.guided?.pending ? "前の候補は記録またはコードが変わったため使えません。整理し直してください。" : "仮説や関連する論点をこのまま相談できます。結果があるときは、目標に照らして次に考えたいことを話してください。相談を続けても実装は開始しません。"}\n\n「相談の続きを問いかけてもらう」は相談だけを始め、何も確定しません。ヒントや別の進み方は「その他…」から選べます。`;
       const selected = yield* await hostAsync(() =>
-        actionCard(ctx, workTitle(s), body, meaning?.label ?? "相談の続きを問いかけてもらう"),
+        actionCard(
+          ctx,
+          workTitle(s),
+          body,
+          meaning?.label ?? "相談の続きを問いかけてもらう",
+          undefined,
+          proposal
+            ? cardSummary(s, proposal, o)
+            : {
+                target: workTitle(s),
+                effect: "相談だけを始めます。何も確定しません。",
+                caution: "別の進み方は「その他…」から選べます。",
+              },
+        ),
       );
       yield* owner.check(token);
       if (selected === "edge") {
