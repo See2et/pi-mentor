@@ -1,0 +1,6 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": { "correctness": "off" },
+  "jsPlugins": [{ "name": "mentor", "specifier": "./tools/oxlint-no-throw.js" }],
+  "overrides": [{ "files": ["src/**"], "rules": { "mentor/no-direct-throw": "error" } }]
+}

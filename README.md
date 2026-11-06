@@ -58,8 +58,11 @@ AI の記録操作と相談整理は別です。相談整理で動けるのは�
 
 ## 開発時の検証
 
+ワークフローの改善を考えるときは、[`src/domain/design.ts`](src/domain/design.ts)（設計の検討・版ごとの記録）、[`work-unit.ts`](src/domain/work-unit.ts)（契約・証拠・本人判断）、[`workflow.ts`](src/domain/workflow.ts)（遷移と権限）、[`approval.ts`](src/domain/approval.ts)（候補・承認の鮮度）と、対応する [`tests/domain/`](tests/domain/) から確認できます。表示・プロンプトは `src/presentation/`、保存の復元は `src/persistence.ts`、Pi との接続は `src/extension.ts` に分けています。
+
 ```sh
 npm ci
-npm run typecheck
-npm test
+npm run check
 ```
+
+`check` は型検査、依存方向の検査、直接 `throw` の検査、Vitest を実行します。個別には `npm run typecheck` / `npm run architecture` / `npm run lint` / `npm test` を使えます。
