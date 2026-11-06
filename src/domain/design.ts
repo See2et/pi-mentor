@@ -2,7 +2,7 @@ import { ok, safeTry } from "neverthrow";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { reject, type Outcome } from "./errors.ts";
-import { content, copy, requireRule, type ReadonlyValue } from "./value.ts";
+import { content, copy, type ReadonlyValue } from "./value.ts";
 
 export const INNER = { hypothesis: "仮説形成", critique: "批判・弁護", judgment: "判断" } as const;
 export const DECISIONS = { adopt: "暫定採用", revise: "修正する", defer: "保留" } as const;
@@ -84,7 +84,14 @@ export const DiscussionActionSchema = Type.Union([
     { additionalProperties: false },
   ),
   Type.Object({ type: Type.Literal("issue"), text }, { additionalProperties: false }),
-  Type.Object({ type: Type.Literal("target"), text }, { additionalProperties: false }),
+  Type.Object(
+    { type: Type.Literal("target"), text, issueId: Type.Optional(id) },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { type: Type.Literal("focus"), issueId: id, revision: Type.Optional(revisionRef) },
+    { additionalProperties: false },
+  ),
   Type.Object({ type: Type.Literal("direction") }, { additionalProperties: false }),
   Type.Object({ type: Type.Literal("rethink") }, { additionalProperties: false }),
 ]);
@@ -112,6 +119,16 @@ export function currentRevision(issue: Issue) {
 }
 export function currentJudgment(issue: Issue) {
   return issue.judgments.findLast((j) => j.revision === issue.currentRevision);
+}
+// Reusing an earlier or already judged target would revive its historical decision.
+export function newerDraft(issue: Issue, text: string) {
+  return issue.revisions.findLast(
+    (r) =>
+      !r.confirmed &&
+      r.revision > (issue.currentRevision ?? 0) &&
+      r.text === text &&
+      !issue.judgments.some((j) => j.revision === r.revision),
+  );
 }
 export function concerns(issue: Issue, revision = issue.currentRevision) {
   const replaced = new Set(issue.critiques.map((c) => c.replaces));
@@ -247,20 +264,18 @@ export function discussIssue(
 ): Outcome<Issue> {
   return safeTry(function* () {
     const i = copy(issue);
-    if (action.type === "direction") {
-      yield* requireRule(
-        i.inner === "critique" && currentRevision(i),
-        "Discuss the exact proposal and its weaknesses before direction. Stage skips need human approval.",
-      );
-      i.inner = "judgment";
-    } else if (action.type === "rethink") i.inner = "hypothesis";
-    else {
-      const text = yield* content(action.text);
-      // Reuse only a newer unconfirmed draft: an older target could revive prior adoption.
-      if (currentRevision(i)?.text !== text || currentJudgment(i)) {
-        const saved = i.revisions.findLast(
-          (r) => !r.confirmed && r.revision > (i.currentRevision ?? 0) && r.text === text,
+    // Old operation names remain readable/restorable, but cannot cross educational modes.
+    if (action.type === "direction" || action.type === "rethink") {
+      const required = action.type === "direction" ? "critique" : "hypothesis";
+      if (i.inner !== required)
+        return reject(
+          "Changing discussion mode requires an explicit mode proposal and human approval.",
+          "authority",
         );
+    } else {
+      const text = yield* content(action.text);
+      if (currentRevision(i)?.text !== text || currentJudgment(i)) {
+        const saved = newerDraft(i, text);
         if (saved) i.currentRevision = saved.revision;
         else {
           const revision = i.revisions.length + 1;
@@ -268,7 +283,6 @@ export function discussIssue(
           i.currentRevision = revision;
         }
       }
-      i.inner = "critique";
     }
     return ok(i);
   });

@@ -364,7 +364,7 @@ export async function mentorMenu(
       }
     }
     if (op === "hint") {
-      const kind = yield* await select("今回の応答だけのヒント（どのフェーズでも選べます）", {
+      const kind = yield* await select("今回だけの支援（仮説形成では方法を勧めず問いかけます）", {
         back: "戻る（変更なし）",
         ...HINTS,
       });

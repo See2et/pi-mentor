@@ -738,7 +738,7 @@ test("Pi session entries survive disk reopening once Pi has a real conversation;
   }
 });
 
-test("ordinary discussion reaches exact adoption approval and scope without transition commands", async () => {
+test("ordinary discussion switches modes only by selection and starts an exact contract with one native approval", async () => {
   const h = harness();
   await h.emit("session_start");
   await h.command("resume");
@@ -749,12 +749,28 @@ test("ordinary discussion reaches exact adoption approval and scope without tran
   ])
     assert.equal((await h.discuss(action)).isError, undefined);
   let s = (await h.status()).record;
-  assert.equal(s.issues[0].inner, "critique");
+  assert.equal(s.discussion.mode, "hypothesis");
+  assert.equal(s.issues[0].revisions[0].confirmed, false);
+  assert.equal((await h.discuss({ type: "direction" })).isError, true);
+  const mode = {
+    summary: "批判・弁護を提案",
+    unresolved: "入力長は未確認",
+    edge: { type: "critique" },
+  };
+  assert.equal((await h.next(mode)).details.operationStatus, "proposed");
+  assert.equal((await h.status()).record.discussion.mode, "hypothesis");
+  await h.emit("input", { source: "interactive", text: "批判・弁護に切り替える確認を出して" });
+  h.cardResults.push("continue");
+  assert.equal((await h.assist(mode)).details.operationStatus, "cancelled");
+  assert.equal((await h.status()).record.discussion.mode, "hypothesis");
   assert.equal(
-    s.issues[0].revisions[0].confirmed,
-    false,
-    "discussion is not human target confirmation",
+    (await h.assist(mode)).details.operationStatus,
+    "rejected",
+    "cannot retry on declined input",
   );
+  await h.emit("input", { source: "interactive", text: "切り替えの確認をもう一度" });
+  h.cardResults.push("edge");
+  assert.equal((await h.assist(mode)).details.operationStatus, "applied");
   await h.record({
     type: "critique",
     issueId: 1,
@@ -764,39 +780,58 @@ test("ordinary discussion reaches exact adoption approval and scope without tran
     evidence: "想定入力長が未知",
     status: "open",
   });
-  assert.equal((await h.discuss({ type: "direction" })).isError, undefined);
-  await h.emit("input", { source: "interactive", text: "なるほど" });
-  s = (await h.status()).record;
-  assert.equal(s.issues[0].judgments.length, 0, "ordinary assent is not approval");
-  const adoption = {
-    summary: "方向だけを採用",
-    unresolved: "入力長は未確認",
-    edge: { type: "adopt", note: "上限値は範囲の相談で決める" },
+  await h.discuss({ type: "target", text: "利用者が挙げた別の仮説" });
+  await h.discuss({ type: "issue", text: "関連する入力の形式" });
+  assert.equal((await h.status()).record.discussion.mode, "critique");
+  assert.equal((await h.discuss({ type: "rethink" })).isError, true);
+  const formation = { summary: "仮説を考え直す", unresolved: "", edge: { type: "hypothesis" } };
+  h.inspector = async () => {
+    await h.record({ type: "proposal", text: "承認中に記録が変化" });
+    return "edge";
   };
-  h.cardResults.push("continue");
-  assert.equal((await h.assist(adoption)).details.operationStatus, "cancelled");
-  assert.equal((await h.status()).record.issues[0].revisions[0].confirmed, false);
   assert.equal(
-    (await h.assist(adoption)).details.operationStatus,
+    (await h.assist(formation)).details.operationStatus,
     "rejected",
-    "cancelled approval cannot repeat on the same input",
+    "stale mode approval applies nothing",
   );
-  await h.emit("input", { source: "interactive", text: "採用する案の確認をもう一度出して" });
+  h.inspector = undefined;
+  assert.equal((await h.status()).record.discussion.mode, "critique");
+  await h.emit("input", { source: "interactive", text: "仮説形成への確認をもう一度" });
   h.cardResults.push("edge");
-  assert.equal((await h.assist(adoption)).details.operationStatus, "applied");
+  assert.equal((await h.assist(formation)).details.operationStatus, "applied");
+  assert.equal((await h.status()).record.discussion.mode, "hypothesis");
+  await h.emit("input", { source: "interactive", text: "この正確な範囲で始める確認を出して" });
+  const count = h.manager.getEntries().length;
+  const approvals = h.approvalBodies.length;
+  h.cardResults.push("edge");
+  assert.equal(
+    (
+      await h.assist({
+        summary: "範囲を限定して開始",
+        unresolved: "入力長は未確認",
+        edge: { type: "start", contract: unitContract },
+      })
+    ).details.operationStatus,
+    "applied",
+  );
   s = (await h.status()).record;
-  assert.equal(s.whole, "implementation");
-  assert.equal(s.issues[0].revisions[0].confirmed, true);
-  assert.equal(s.issues[0].judgments[0].revision, 1);
-  assert.equal(s.activeUnit, null);
-  assert.equal(s.units.length, 0, "adoption does not authorize scope or implementation");
-  assert.match(h.approvalBodies.at(-1)!, /境界で長さを制限する/);
-  assert.match(h.notices.join("\n"), /相談を整理/);
+  assert.equal(h.manager.getEntries().length, count + 1);
+  assert.equal(h.approvalBodies.length, approvals + 1, "no adopt/scope/start approval chain");
+  assert.equal(s.units[0].phase, "implementing");
+  assert.deepEqual(s.units[0].revisions[0].contract, unitContract);
+  assert.equal(s.issues[0].judgments.length, 0);
+  for (const text of [
+    unitContract.scope,
+    unitContract.nonGoals,
+    unitContract.verificationPlan,
+    unitContract.expectations[0].text,
+  ])
+    assert.ok(h.approvalBodies.at(-1)!.includes(text));
   await h.emit("session_start");
   assert.deepEqual(
     (await h.status()).record,
     s,
-    "unconfirmed discussion history and exact adoption restore",
+    "multi-target discussion and one-approval start restore",
   );
 });
 
@@ -825,7 +860,11 @@ test("discussion updates cannot skip stages, judge, confirm scope or revive prio
   await h.discuss({ type: "issue", text: "論点" });
   assert.equal((await h.discuss({ type: "direction" })).isError, true);
   await h.discuss({ type: "target", text: "案1" });
-  await h.discuss({ type: "direction" });
+  await h.emit("input", { source: "interactive", text: "批判・弁護へ" });
+  h.cardResults.push("edge");
+  await h.assist({ summary: "切り替える", unresolved: "", edge: { type: "critique" } });
+  h.cardResults.push("edge");
+  await h.assist({ summary: "旧来の採否相談", unresolved: "", edge: { type: "decide" } });
   await h.emit("input", { source: "interactive", text: "採用を確認したい" });
   h.cardResults.push("edge");
   await h.assist({ summary: "採用", unresolved: "", edge: { type: "adopt", note: "" } });
@@ -1284,7 +1323,7 @@ test("assistance needs real one-time native approval; exact repair preserves his
   assert.deepEqual(after.units, before.units);
   assert.match(result.details.feedback, /r1 → r2/);
   assert.match(h.notices.at(-1)!, /読者の視点を含む正確な修正案/);
-  assert.match(h.notices.at(-1)!, /前提と弱点を検討する/);
+  assert.match(h.notices.at(-1)!, /批判・弁護する/);
 });
 
 test("native assistance authorizes exact adoption, scope, start and acceptance only after affirmative selection, one atomic entry each", async () => {

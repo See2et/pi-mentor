@@ -13,7 +13,7 @@ import {
 } from "./domain/approval.ts";
 import { DiscussionActionSchema } from "./domain/design.ts";
 import { reject, type Failure, type Outcome } from "./domain/errors.ts";
-import { initialState, type State } from "./domain/state.ts";
+import { discussionView, initialState, type State } from "./domain/state.ts";
 import type { Observation } from "./domain/work-unit.ts";
 import { NextSchema } from "./domain/workflow-schema.ts";
 import {
@@ -288,7 +288,12 @@ export default function mentorExtension(pi: ExtensionAPI): void {
     error,
     operationStatus: "unchanged",
     sourceObservation: observation,
-    location: { whole: state.whole, issueId: state.activeIssue, unitId: state.activeUnit },
+    location: {
+      whole: state.whole,
+      mode: discussionView(state).mode,
+      issueId: state.activeIssue,
+      unitId: state.activeUnit,
+    },
     recovery:
       "Read mentor_status via codemode for current state; refresh before retrying stale writes. Only /mentor can resume/reset.",
   });
@@ -372,7 +377,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
     exposure: "codemode",
     namespace,
     description:
-      "Draft ONE exact typed /mentor card; never apply its effects. Latest snapshot required; call last after records/evidence (state/source changes stale it). Include summary and unresolved matters. Only user selection of the returned label—not summary—applies atomically, with no later confirmation. adopt is direction only; scope does not start; start/correct authorize only the exact unit contract; accept binds contract/source/evidence/limitations, never starts work or adopts an experiment as design. No automatic transitions or grading.",
+      "Draft ONE exact typed /mentor card, never apply it. Latest snapshot; call last after records/evidence (changes stale it). Include summary/unresolved matters. User selection of returned label—not summary—applies atomically, no later confirmation. hypothesis/critique propose reversible discussion modes, never auto-applied. adopt is optional direction only; scope is optional and does not start. One start with an exact contract works directly from design discussion, no adopt/scope prerequisites; start/correct authorize only that contract. accept binds contract/source/evidence/limitations and returns to next-discussion, never starts work or adopts an experiment as design. No automatic transitions or grading.",
     parameters: Type.Object(
       { expectedSnapshot: Type.String(), proposal: NextSchema },
       { additionalProperties: false },
@@ -417,7 +422,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
     exposure: "model-only",
     defaultActive: false,
     description:
-      "Offer ONE exact normal-card operation at a human decision point or explicit operation/skip request; no internal-command request needed. TUI native affirmative approval alone authorizes it, with the same preconditions/authority as /mentor. Chat, host input and quotes are context, NOT consent. Never retry cancelled/rejected approval without fresh explicit user intent. Latest snapshot required; call last after records. adopt does not start; start/correct authorize only displayed contract; accept binds contract/source/evidence/missing evidence/limitations, never next work or experiment design adoption. No advanced reset/pause, arrays, delegation or automatic follow-up. Cancel/stale/noUI/paused/busy apply nothing. Report actual applied/cancelled/rejected status.",
+      "Offer ONE exact normal-card operation at a decision point or explicit operation/skip request; no command request needed. TUI native affirmative approval alone authorizes it, with the same preconditions/authority as /mentor. Chat, host input and quotes are context, NOT consent. Never retry cancelled/rejected approval without fresh explicit user intent. Latest snapshot required; call last after records. hypothesis/critique require affirmative selection, never auto-switch. One exact-contract start from design discussion suffices, without adopt/scope prerequisites; start/correct authorize only displayed contract. accept binds contract/source/evidence/missing evidence/limitations and returns to next discussion, never next work or experiment design adoption. No advanced reset/pause, arrays, delegation or automatic follow-up. Cancel/stale/noUI/paused/busy apply nothing. Report actual applied/cancelled/rejected status.",
     parameters: Type.Object(
       { expectedSnapshot: Type.String(), proposal: NextSchema },
       { additionalProperties: false },
@@ -508,7 +513,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
     label: "Mentor discussion update",
     defaultActive: false,
     description:
-      "Organize actual conversation with brief disclosure: goals->issues, new issue->hypothesis, exact unconfirmed target->critique, critique->direction, or rethink. Ask concrete stage questions and address answers first; no stage-racing, grading or AI-chosen skips. Never confirms/adopts, authorizes scope/start, switches units, accepts or leaves implementation. Changed targets remain unconfirmed; history stays revision-bound. Discover mentor_record/status/next via codemode describeTool; use mentor_assist for human decisions/skips. Latest snapshot required; paused rejects.",
+      "Organize goals->issues or related issues/targets; focus references exact history without reviving judgments. Targets share ONE mode; NEVER switch it (including direction/rethink). Propose hypothesis/critique via mentor_next/mentor_assist; await selection. Formation: no method/solution recommendations; critique: active criticism/alternatives. No confirmation, judgment, start, unit switch or leaving implementation. Disclose updates. Latest snapshot; paused rejects.",
     parameters: Type.Object(
       { expectedSnapshot: Type.String(), action: DiscussionActionSchema },
       { additionalProperties: false },
@@ -557,7 +562,7 @@ export default function mentorExtension(pi: ExtensionAPI): void {
     exposure: "codemode",
     namespace,
     description:
-      "Record AI drafts/proposals, grounded revision-bound critiques/corrections, reported responses, unit contracts/evidence/readiness or optional learning prompts. Never changes phase, selection, human confirmation/judgment or understanding. Exact latest snapshot required; serialize writes, refresh conflicts; paused rejects. Critique corrections reference SAME revision and preserve history; responses are AI reports. Evidence requires valid expectation IDs, exact current contract revision and sourceHash actually observed by mentor_status (rechecked at commit); include observations, references/commands/results, real/substitute/untested methods, limitations and concerns. Passing tests is not expectation satisfaction. Drafts do not authorize implementation.",
+      "Record AI drafts/proposals, grounded revision-bound critiques/corrections, reported responses, unit contracts/evidence/readiness or optional learning prompts. Never changes phase, selection, human confirmation/judgment or understanding. Exact latest snapshot required; serialize writes, refresh conflicts; paused rejects. Critique corrections reference SAME revision and preserve history; responses are AI reports. Evidence requires valid expectation IDs, exact current contract revision and sourceHash actually observed by mentor_status (rechecked at commit); include observations, references/commands/results, real/substitute/untested methods, limitations and concerns. Passing tests is not expectation satisfaction. Drafts do not authorize implementation. In formation only clarify/record the learner's own hypotheses; NEVER recommend methods/solutions. Active criticism and alternatives belong to explicitly selected critique mode.",
     parameters: Type.Object(
       { expectedSnapshot: Type.String(), action: ModelActionSchema },
       { additionalProperties: false },

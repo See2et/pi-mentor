@@ -12,13 +12,14 @@ import {
   currentRevision,
   discussIssue,
   issueById,
+  newerDraft,
   renameIssue,
   selectInner,
   type DesignUserAction,
   type DiscussionAction,
 } from "./design.ts";
 import { reject, type Outcome } from "./errors.ts";
-import { WHOLE, type State } from "./state.ts";
+import { WHOLE, discussionView, type State } from "./state.ts";
 import {
   content,
   copy,
@@ -55,6 +56,29 @@ export const ModelActionSchema = Type.Union([
   ),
 ]);
 export type ModelAction = ReadonlyValue<Static<typeof ModelActionSchema>>;
+
+// Keep the shared mode and accumulated exact targets coherent with legacy/admin focus.
+function organizeDiscussion(
+  state: State,
+  mode = discussionView(state).mode,
+  resetFocus = false,
+): State {
+  const s = copy(state);
+  const targets = copy(discussionView(state).targets);
+  const i = s.issues.find((i) => i.id === s.activeIssue);
+  const previous = discussionView(state).focus;
+  const focus = i
+    ? !resetFocus && previous?.issueId === i.id
+      ? previous
+      : { issueId: i.id, revision: i.currentRevision }
+    : null;
+  if (focus && !targets.some((t) => t.issueId === focus.issueId && t.revision === focus.revision))
+    targets.push(copy(focus));
+  if (i && s.whole === "explore" && (i.inner !== "judgment" || mode === "hypothesis"))
+    i.inner = mode;
+  s.discussion = { mode, focus: copy(focus), targets };
+  return s;
+}
 
 // Advanced human operations intentionally allow moves that normal cards do not.
 export function applyUser(
@@ -126,6 +150,20 @@ export function applyUser(
       default:
         return reject("Unknown user operation", "invalid-input");
     }
+    if (s.activeIssue !== null || s.discussion)
+      s = copy(
+        organizeDiscussion(
+          s,
+          action.type === "phase" && action.inner
+            ? action.inner === "hypothesis"
+              ? "hypothesis"
+              : "critique"
+            : discussionView(state).mode,
+          action.type === "select" ||
+            action.type === "hypothesis" ||
+            action.type === "confirmDraft",
+        ),
+      );
     s.sequence++;
     return ok(s);
   });
@@ -173,7 +211,9 @@ export function applyDiscussion(state: State, action: DiscussionAction): Outcome
         "Discussion operation not permitted or invalid. No decisions, scope confirmation or implementation authority.",
         "authority",
       );
-    const s = copy(state);
+    let s = copy(state);
+    // Capture the mode before focus changes; organizing issue C must not select formation.
+    const mode = discussionView(state).mode;
     switch (action.type) {
       case "goals":
         yield* require(s.whole ===
@@ -183,25 +223,44 @@ export function applyDiscussion(state: State, action: DiscussionAction): Outcome
         s.whole = "issues";
         break;
       case "issue": {
-        yield* require(s.whole ===
-          "issues", "Discuss the goals before identifying the next issue. Stage skips need human approval.");
+        yield* require(s.whole === "issues" ||
+          s.whole ===
+            "explore", "Discuss the goals before identifying an issue. Leaving implementation needs human approval.");
         const id = s.issues.length + 1;
         s.issues.push(copy(yield* createIssue(id, action.text)));
         s.activeIssue = id;
         s.whole = "explore";
         break;
       }
+      case "focus": {
+        yield* require(s.whole ===
+          "explore", "Focus needs the current design discussion; it cannot leave implementation.");
+        const i = yield* issueById(s, action.issueId);
+        const revision = action.revision === undefined ? i.currentRevision : action.revision;
+        yield* require(revision === null ||
+          i.revisions.some(
+            (r) => r.revision === revision,
+          ), "Hypothesis revision not found.", "missing-target");
+        s.activeIssue = i.id;
+        // Focusing historical evidence is not re-adoption of an earlier current hypothesis.
+        s.discussion = { ...copy(discussionView(s)), focus: { issueId: i.id, revision } };
+        s.issues[i.id - 1].inner = mode;
+        break;
+      }
       case "target":
       case "direction":
-      case "rethink":
+      case "rethink": {
         yield* require(s.whole === "explore" &&
           s.activeIssue !==
             null, "This update needs the current design discussion; it cannot leave implementation or switch units.");
-        s.issues[s.activeIssue! - 1] = copy(
-          yield* discussIssue(yield* issueById(s, s.activeIssue!), action),
-        );
+        const id = action.type === "target" ? (action.issueId ?? s.activeIssue!) : s.activeIssue!;
+        s.issues[id - 1] = copy(yield* discussIssue(yield* issueById(s, id), action));
+        s.activeIssue = id;
+        s.issues[id - 1].inner = mode;
         break;
+      }
     }
+    s = copy(organizeDiscussion(s, mode, action.type === "target" || action.type === "issue"));
     s.sequence++;
     s.discussionHistory = [
       ...(s.discussionHistory ?? []),
@@ -239,6 +298,10 @@ export function transition(
       });
     const explore = () =>
       require(s.whole === "explore" && i, "This action needs the current design discussion.");
+    const currentTarget = () =>
+      require(discussionView(s).focus?.revision ===
+        activeIssue(s)
+          ?.currentRevision, "A human design decision needs the exact current target, not a historical discussion focus.");
     const implementation = () =>
       require(s.whole === "implementation" &&
         u, "This action needs the current implementation scope.");
@@ -250,9 +313,9 @@ export function transition(
         yield* user({ type: "phase", whole: "issues" });
         break;
       case "issue": {
-        yield* require(["issues", "consistency", "summary"].includes(
+        yield* require(["issues", "explore", "consistency", "summary"].includes(
           s.whole,
-        ), "Choose an issue from the issue or whole-review discussion.");
+        ), "Choose an issue from a design discussion.");
         let id = e.issueId;
         if (id !== undefined)
           yield* require((yield* issueById(s, id)).text ===
@@ -262,9 +325,13 @@ export function transition(
           id = s.issues.length;
         }
         yield* user({ type: "select", issueId: id });
-        yield* user({ type: "phase", whole: "explore", inner: "hypothesis" });
+        yield* user({ type: "phase", whole: "explore" });
         break;
       }
+      case "hypothesis":
+        yield* explore();
+        yield* user({ type: "phase", whole: "explore", inner: "hypothesis" });
+        break;
       case "critique": {
         yield* explore();
         yield* require(i!.inner !== "judgment" ||
@@ -272,7 +339,7 @@ export function transition(
             undefined, "Supply the exact revised target to return directly from judgment.");
         const r = currentRevision(i!);
         if (e.text !== undefined && e.text !== r?.text) {
-          const saved = i!.revisions.findLast((r) => !r.confirmed && r.text === e.text);
+          const saved = newerDraft(i!, e.text);
           if (!saved) yield* model({ type: "draft", issueId: i!.id, text: e.text });
           yield* user({
             type: "confirmDraft",
@@ -280,14 +347,15 @@ export function transition(
             revision: saved?.revision ?? (yield* issueById(s, i!.id)).revisions.length,
           });
         }
-        yield* require(currentRevision(
-          yield* issueById(s, i!.id),
-        ), "Organize an exact proposal before examining it.");
+        if (e.text !== undefined) s = organizeDiscussion(s, discussionView(s).mode, true);
+        yield* require(discussionView(s).focus?.revision !=
+          null, "Organize an exact proposal before examining it.");
         yield* user({ type: "phase", whole: "explore", inner: "critique" });
         break;
       }
       case "decide":
         yield* explore();
+        yield* currentTarget();
         yield* require(i!.inner === "critique" &&
           currentRevision(i!), "Examine the chosen proposal before deciding direction.");
         yield* user({ type: "phase", whole: "explore", inner: "judgment" });
@@ -295,6 +363,7 @@ export function transition(
       case "adopt":
         yield* explore();
         yield* require(i!.inner === "judgment", "Discuss the direction decision first.");
+        yield* currentTarget();
         yield* require(currentRevision(i!), "Organize an exact proposal before adoption.");
         if (!currentRevision(i!)!.confirmed)
           yield* user({ type: "confirmDraft", issueId: i!.id, revision: i!.currentRevision! });
@@ -304,6 +373,7 @@ export function transition(
         break;
       case "revise":
         yield* explore();
+        yield* currentTarget();
         yield* user({ type: "judge", issueId: i!.id, decision: "revise", note: e.note });
         yield* user({ type: "phase", whole: "explore", inner: "hypothesis" });
         break;
@@ -320,9 +390,16 @@ export function transition(
         break;
       }
       case "start": {
-        yield* require(s.whole === "implementation" &&
-          (!u || u.phase === "scope"), "Implementation can start only from scope discussion.");
-        let id = u?.id;
+        const fromDiscussion = s.whole === "explore" || s.whole === "issues";
+        yield* require(fromDiscussion ||
+          (s.whole === "implementation" &&
+            (!u ||
+              u.phase ===
+                "scope")), "Implementation can start only from design or scope discussion.");
+        yield* require(!fromDiscussion ||
+          e.contract, "Starting from discussion requires an exact scope contract.");
+        // A new discussion start never reuses or revives a previous unit's authority.
+        let id = fromDiscussion ? undefined : u?.id;
         if (e.contract) {
           yield* model({ type: "unitDraft", unitId: id, contract: e.contract });
           id ??= s.units.length;
@@ -336,6 +413,7 @@ export function transition(
           unitRevision(yield* unitById(s, id))
             ?.confirmed, "Organize the exact scope, expectations and check plan first.");
         yield* user({ type: "selectUnit", unitId: id! });
+        yield* user({ type: "phase", whole: "implementation" });
         yield* user({ type: "unitPhase", unitId: id!, phase: "implementing" });
         break;
       }
@@ -352,6 +430,7 @@ export function transition(
           u!.phase === "judgment", "Inspect the result before accepting it.");
         yield* user({ type: "unitPhase", unitId: u!.id, phase: "judgment" });
         yield* user({ type: "unitJudge", unitId: u!.id, decision: "accept", note: e.note });
+        yield* user({ type: "phase", whole: "issues" });
         break;
       case "correct":
         yield* implementation();
@@ -381,6 +460,7 @@ export function transition(
           yield* user({ type: "unitJudge", unitId: u!.id, decision: "defer", note: e.note });
         } else {
           yield* explore();
+          yield* currentTarget();
           yield* user({ type: "judge", issueId: i!.id, decision: "defer", note: e.note });
         }
         yield* user({ type: "phase", whole: "issues" });
@@ -445,15 +525,13 @@ export function defaultNext(s: State, o?: Observation): Next | undefined {
   const i = activeIssue(s),
     u = activeUnit(s);
   let edge: Edge | undefined;
-  if (s.whole === "explore" && i && currentRevision(i)) {
+  if (s.whole === "explore" && i && discussionView(s).focus?.revision != null) {
     const draft = i.revisions.findLast((r) => !r.confirmed && r.revision > i.currentRevision!);
     edge = draft
       ? { type: "critique", text: draft.text }
-      : i.inner === "hypothesis"
+      : discussionView(s).mode === "hypothesis"
         ? { type: "critique" }
-        : i.inner === "critique"
-          ? { type: "decide" }
-          : undefined;
+        : undefined;
   } else if (s.whole === "implementation" && u) {
     if (u.phase === "scope" && unitRevision(u)) {
       const draft = u.revisions.findLast((r) => !r.confirmed && r.revision > u.currentRevision!);
@@ -461,8 +539,9 @@ export function defaultNext(s: State, o?: Observation): Next | undefined {
     } else if (u.phase === "implementing") edge = { type: "inspect" };
     else if (u.phase === "examination") edge = { type: "accept", note: "" };
     else if (u.phase === "judgment")
-      edge = unitJudgment(u, o)?.decision === "accept" ? { type: "review" } : { type: "inspect" };
-  } else if (s.whole === "consistency" || s.whole === "summary") edge = { type: "finish" };
+      edge =
+        unitJudgment(u, o)?.decision === "accept" ? { type: "revisitGoals" } : { type: "inspect" };
+  }
   return edge ? { summary: "現在の記録を対象に進めます。", unresolved: "", edge } : undefined;
 }
 export function currentNext(s: State, o?: Observation): Next | undefined {
@@ -470,9 +549,12 @@ export function currentNext(s: State, o?: Observation): Next | undefined {
   return s.guided?.pending ? pendingNext(s, o) : defaultNext(s, o);
 }
 export function alternativeEdges(s: State, o?: Observation): Edge[] {
-  const result: Edge[] = [{ type: "revisitGoals" }, { type: "review" }];
+  const result: Edge[] = [{ type: "revisitGoals" }];
   if (s.whole === "explore" && activeIssue(s))
-    result.push({ type: "revise", note: "" }, { type: "defer", note: "" });
+    result.push(
+      discussionView(s).mode === "critique" ? { type: "hypothesis" } : { type: "critique" },
+      { type: "defer", note: "" },
+    );
   if (s.whole === "implementation") {
     result.push({ type: "design", note: "" });
     if (activeUnit(s)) result.push({ type: "correct", note: "" }, { type: "defer", note: "" });

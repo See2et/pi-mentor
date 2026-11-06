@@ -2,7 +2,9 @@ import { expectOk, expectError } from "../result.ts";
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import { initialState } from "../../src/domain/state.ts";
+import { currentJudgment } from "../../src/domain/design.ts";
 import {
+  applyDiscussion,
   applyModel,
   applyUser,
   currentNext,
@@ -11,7 +13,7 @@ import {
 } from "../../src/domain/workflow.ts";
 import { actionMeaning, operationFeedback, exactArtifact } from "../../src/presentation/action.ts";
 import type { Edge, Next } from "../../src/domain/workflow-schema.ts";
-import type { Contract, Observation } from "../../src/domain/work-unit.ts";
+import { unitJudgment, type Contract, type Observation } from "../../src/domain/work-unit.ts";
 
 const observation: Observation = {
   checkedAt: "now",
@@ -46,8 +48,8 @@ function design() {
 test("atomic edge failure never partially registers or confirms artifacts", () => {
   const s = design();
   const before = structuredClone(s);
-  // Draft creation would succeed, but starting is invalid outside the scope discussion.
-  expectError(transition(s, next({ type: "start", contract }), observation), /scope discussion/);
+  // A discussion start cannot reuse any earlier unit without an exact contract.
+  expectError(transition(s, next({ type: "start" }), observation), /exact scope contract/);
   assert.deepEqual(s, before);
   const invalid = {
     ...contract,
@@ -90,7 +92,7 @@ test("revision, experiment, design-return and correction loops preserve history 
   assert.equal(s.units[0].judgments.at(-1)?.decision, "design");
   assert.equal(s.units[0].phase, "judgment");
   assert.equal(s.issues[0].revisions.length, 2);
-  expectError(transition(s, next({ type: "start" }), observation), /scope discussion/);
+  expectError(transition(s, next({ type: "start" }), observation), /exact scope contract/);
 });
 
 test("newer saved revision is the explicit default target and exact repair works directly from judgment", () => {
@@ -150,6 +152,46 @@ test("newer saved revision is the explicit default target and exact repair works
   assert.deepEqual(s, before);
 });
 
+test("reselecting a revised unconfirmed hypothesis creates a fresh target without reviving its judgment or records", () => {
+  let s = expectOk(applyUser(initialState(), { type: "resume" }));
+  for (const action of [
+    { type: "goals", goal: "設計する", constraints: "" },
+    { type: "issue", text: "データの置き場所" },
+    { type: "target", text: "仮説A" },
+  ] as const)
+    s = expectOk(applyDiscussion(s, action));
+  assert.equal(s.issues[0].revisions[0].confirmed, false);
+  s = expectOk(
+    applyModel(s, {
+      type: "critique",
+      issueId: 1,
+      revision: 1,
+      category: "uncertainty",
+      text: "古いAへの懸念",
+      evidence: "以前の条件",
+      status: "open",
+    }),
+  );
+  s = expectOk(transition(s, next({ type: "revise", note: "Aを見直す" }), observation));
+  s = expectOk(applyDiscussion(s, { type: "target", text: "仮説B" }));
+  const before = structuredClone(s);
+  const p = next({ type: "critique", text: "仮説A" });
+  const card = expectOk(exactArtifact(s, p, observation));
+  const after = expectOk(transition(s, p, observation));
+  assert.equal(after.issues[0].currentRevision, 3, "do not reactivate judged r1");
+  assert.equal(currentJudgment(after.issues[0]), undefined);
+  assert.deepEqual(after.issues[0].revisions.slice(0, 2), before.issues[0].revisions);
+  assert.deepEqual(after.issues[0].critiques, before.issues[0].critiques);
+  assert.deepEqual(after.issues[0].judgments, before.issues[0].judgments);
+  assert.match(card, /検討対象の正確な案:\n仮説A/);
+  assert.doesNotMatch(
+    card,
+    /古いAへの懸念/,
+    "approval must not attach old r1 records to the new A",
+  );
+  assert.deepEqual(s, before);
+});
+
 test("scope default start displays the newer saved contract instead of silently authorizing the old scope", () => {
   let s = expectOk(transition(design(), next({ type: "scope", contract }), observation));
   const revised = { ...contract, scope: "更新後の限定範囲" };
@@ -182,10 +224,15 @@ test("exact acceptance card retains payload, missing evidence and source limitat
     assert.ok(text.includes(value), value);
   s = expectOk(transition(s, p, { checkedAt: "now", error: "Git外" }));
   assert.equal(s.units[0].judgments.at(-1)?.source, null);
+  assert.equal(
+    unitJudgment(s.units[0], observation),
+    undefined,
+    "unknown acceptance cannot become current later",
+  );
   assert.equal(s.issues[0].judgments.length, 0, "experiment acceptance is not design adoption");
   assert.equal(
     currentNext(s, observation)?.edge.type,
-    "inspect",
-    "unknown acceptance does not become current acceptance later",
+    undefined,
+    "post-accept discussion neither revives unknown acceptance nor authorizes further work",
   );
 });

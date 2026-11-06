@@ -17,6 +17,18 @@ const whole = Type.Unsafe<keyof typeof WHOLE>(
   Type.Union(Object.keys(WHOLE).map((v) => Type.Literal(v))),
 );
 const ref = Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]);
+const DiscussionTargetSchema = Type.Object(
+  { issueId: Type.Integer({ minimum: 1 }), revision: ref },
+  { additionalProperties: false },
+);
+const DiscussionSchema = Type.Object(
+  {
+    mode: Type.Union([Type.Literal("hypothesis"), Type.Literal("critique")]),
+    focus: Type.Union([DiscussionTargetSchema, Type.Null()]),
+    targets: Type.Array(DiscussionTargetSchema),
+  },
+  { additionalProperties: false },
+);
 export const StateSchema = Type.Object(
   {
     schema: Type.Literal(2),
@@ -36,6 +48,7 @@ export const StateSchema = Type.Object(
     activeUnit: ref,
     units: Type.Array(UnitSchema),
     guided: Type.Optional(GuidedSchema),
+    discussion: Type.Optional(DiscussionSchema),
     discussionHistory: Type.Optional(
       Type.Array(
         Type.Object({ sequence: Type.Integer({ minimum: 0 }), action: DiscussionActionSchema }),
@@ -58,6 +71,48 @@ export const initialState = (): State => ({
   activeUnit: null,
   units: [],
 });
+// Schema 2 snapshots without discussion retain their original data and pending freshness.
+// inner is a legacy/admin view; normal conversation mode is shared across targets.
+export function discussionView(s: State): NonNullable<State["discussion"]> {
+  if (s.discussion) return s.discussion;
+  const issue = s.issues.find((i) => i.id === s.activeIssue);
+  return {
+    mode: issue?.inner === "hypothesis" || !issue ? "hypothesis" : "critique",
+    focus: issue ? { issueId: issue.id, revision: issue.currentRevision } : null,
+    targets: issue ? [{ issueId: issue.id, revision: issue.currentRevision }] : [],
+  };
+}
+export function focusedRevision(s: State) {
+  const focus = discussionView(s).focus;
+  return s.issues
+    .find((i) => i.id === focus?.issueId)
+    ?.revisions.find((r) => r.revision === focus?.revision);
+}
 export function validState(data: unknown): data is State {
-  return Value.Check(StateSchema, data) && validUnits(data) && validDesign(data);
+  if (!Value.Check(StateSchema, data) || !validUnits(data) || !validDesign(data)) return false;
+  const d = data.discussion;
+  if (!d) return true;
+  const keys = new Set<string>();
+  for (const t of d.targets) {
+    const issue = data.issues.find((i) => i.id === t.issueId);
+    const key = `${t.issueId}:${t.revision}`;
+    if (
+      !issue ||
+      (t.revision !== null && !issue.revisions.some((r) => r.revision === t.revision)) ||
+      keys.has(key)
+    )
+      return false;
+    keys.add(key);
+  }
+  const active = data.issues.find((i) => i.id === data.activeIssue);
+  if (
+    d.focus
+      ? d.focus.issueId !== data.activeIssue || !keys.has(`${d.focus.issueId}:${d.focus.revision}`)
+      : data.activeIssue !== null
+  )
+    return false;
+  return (
+    data.whole !== "explore" ||
+    (!!active && d.mode === (active.inner === "hypothesis" ? "hypothesis" : "critique"))
+  );
 }

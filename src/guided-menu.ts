@@ -60,15 +60,15 @@ export async function guidedMenu(
     let proposal = currentNext(s, o);
     const organize = () =>
       owner.ask(
-        "[Mentor: organize next action]\nContinue our discussion with a suitable hint or concrete question, then organize the artifact and unresolved matters. Use mentor_discuss only for bounded discussion movement after addressing the current stage, with brief disclosure. At a human decision point, offer ONE exact mentor_assist approval or prepare an optional mentor_next card. This request never adopts, confirms scope, authorizes implementation, accepts a result or requests a stage skip.",
+        "[Mentor: organize next action]\nContinue our discussion with a concrete question, then organize targets and unresolved matters. Formation: clarify the learner's own hypotheses, NEVER recommend methods/solutions. Critique: actively criticize and offer alternatives. mentor_discuss organizes multiple targets/related issues without changing mode. Propose reversible hypothesis/critique mode changes via mentor_next/mentor_assist and wait for explicit selection. When implementation is wanted, ONE exact-contract start approval directly from discussion suffices; adopt/scope are optional. This request itself never changes mode, adopts, authorizes implementation or accepts a result.",
       );
     for (;;) {
       const meaning = proposal && actionMeaning(proposal.edge, s);
       const body = proposal
         ? `次にすること: ${meaning!.label}\n選ぶと: ${meaning!.effect}\n\n候補（詳細はスクロール）:\n${yield* exactArtifact(s, proposal, o)}`
-        : `ここでは普通のチャットで相談を続けます。\n${s.guided?.pending ? "前の候補は記録またはコードが変わったため使えません。整理し直してください。" : "次の一手はまだ整理されていません。AIが会話から目標・案・未解決事項をまとめます。"}\n\n「次の一手を一緒に整理する」は相談だけを始め、何も確定しません。ヒントや別の進み方は「その他…」から選べます。`;
+        : `ここでは普通のチャットで相談を続けます。\n${s.guided?.pending ? "前の候補は記録またはコードが変わったため使えません。整理し直してください。" : "仮説や関連する論点をこのまま相談できます。結果があるときは、目標に照らして次に考えたいことを話してください。相談を続けても実装は開始しません。"}\n\n「相談の続きを問いかけてもらう」は相談だけを始め、何も確定しません。ヒントや別の進み方は「その他…」から選べます。`;
       const selected = yield* await hostAsync(() =>
-        actionCard(ctx, workTitle(s), body, meaning?.label ?? "次の一手を一緒に整理する"),
+        actionCard(ctx, workTitle(s), body, meaning?.label ?? "相談の続きを問いかけてもらう"),
       );
       yield* owner.check(token);
       if (selected === "edge") {

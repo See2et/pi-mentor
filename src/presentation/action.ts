@@ -1,7 +1,13 @@
 import { ok, safeTry } from "neverthrow";
-import { concerns, currentJudgment, currentRevision, issueById } from "../domain/design.ts";
+import {
+  concerns,
+  currentJudgment,
+  currentRevision,
+  issueById,
+  newerDraft,
+} from "../domain/design.ts";
 import type { Outcome } from "../domain/errors.ts";
-import type { State } from "../domain/state.ts";
+import { discussionView, focusedRevision, type State } from "../domain/state.ts";
 import {
   evidenceFreshness,
   unitById,
@@ -20,12 +26,12 @@ export function workTitle(s: State): string {
   if (s.whole === "implementation")
     return u
       ? `${unitRevision(u)?.contract.title ?? "実装範囲"}を${{ scope: "具体化する", implementing: "実装・確認する", examination: "結果から確かめる", judgment: "判断する" }[u.phase]}`
-      : "採用した方向の実装範囲を具体化する（まだ開始しない）";
+      : "実装・実験の範囲を具体化する（まだ開始しない）";
   if (s.whole === "explore" && i)
-    return `${i.text}：${{ hypothesis: "案を考える", critique: "前提と弱点を検討する", judgment: "方向を決める" }[i.inner]}`;
+    return `${i.text}：${{ hypothesis: "自分の仮説を考える", critique: "批判・弁護する" }[discussionView(s).mode]}（相談対象 ${discussionView(s).targets.length}件）`;
   const wholeTitles: Partial<Record<State["whole"], string>> = {
     goals: "目標と制約を整理する",
-    issues: "次に考える論点を選ぶ",
+    issues: "目標・次の論点を相談する",
     consistency: "全体のつながりを見直す",
     summary: "決定と残った課題をまとめる",
   };
@@ -40,12 +46,24 @@ export function actionMeaning(e: Edge, s?: State): { label: string; effect: stri
       };
     case "issue":
       return {
-        label: "この論点の案を考える",
-        effect: "表示した論点を現在の検討対象にします。仮説の採用ではありません。",
+        label: "この論点を相談の対象にする",
+        effect:
+          "表示した論点を相談の対象に加えます。モードや過去の判断は変えず、仮説の採用でもありません。",
+      };
+    case "hypothesis":
+      return {
+        label: "仮説形成に戻る（AIは方法を勧めない）",
+        effect:
+          "同じ相談の仮説形成モードに戻ります。対象・批判・判断の履歴を保持し、実装は許可しません。",
       };
     case "critique": {
       const issue = s && activeIssue(s);
-      const changed = e.text !== undefined && (!issue || e.text !== currentRevision(issue)?.text);
+      const changed =
+        e.text !== undefined &&
+        (!s ||
+          !issue ||
+          e.text !== focusedRevision(s)?.text ||
+          e.text !== currentRevision(issue)?.text);
       return changed
         ? {
             label: "この修正案を検討対象にして批判・弁護する",
@@ -97,7 +115,7 @@ export function actionMeaning(e: Edge, s?: State): { label: string; effect: stri
       return {
         label: "この結果を留保込みで受け入れる",
         effect:
-          "表示した契約・最終観測ソース・証拠・不足と留保に紐づく受け入れを記録します。次の実装は開始しません。実験の受入は設計・機能採用ではありません。",
+          "表示した契約・最終観測ソース・証拠・不足と留保に紐づく受け入れを記録し、目標や次の論点の相談に戻ります。次の実装は開始しません。実験の受入は設計・機能採用ではありません。",
       };
     case "correct":
       return {
@@ -153,10 +171,11 @@ export function operationFeedback(
 ): string {
   const label = actionMeaning(p.edge, before).label;
   const i = activeIssue(after),
-    old = activeIssue(before);
+    selected = focusedRevision(after),
+    old = focusedRevision(before);
   const target =
     p.edge.type === "critique" && i
-      ? `検討対象: r${old?.currentRevision ?? "—"} → r${i.currentRevision}（${old?.currentRevision === i.currentRevision ? "内容変更なし" : "表示した正確な修正案を適用"}）\n${currentRevision(i)?.text}\n${status === "applied" ? "採用・実装許可・結果の受け入れは記録していません。過去の批判・判断は保持しました。" : "採用・実装許可・結果の受け入れは記録しません。過去の批判・判断は保持します。"}\n`
+      ? `検討対象: r${old?.revision ?? "—"} → r${selected?.revision ?? "—"}（${old?.revision === selected?.revision ? "内容変更なし" : "表示した正確な修正案を適用"}）\n${selected?.text ?? "まだなし"}\n${status === "applied" ? "採用・実装許可・結果の受け入れは記録していません。過去の批判・判断は保持しました。" : "採用・実装許可・結果の受け入れは記録しません。過去の批判・判断は保持します。"}\n`
       : "";
   return `${status === "applied" ? "適用しました" : "承認すると"}: ${label}\n${target}${status === "applied" ? "現在の相談" : "承認後の相談"}: ${workTitle(after)}`;
 }
@@ -179,11 +198,14 @@ export function exactArtifact(s: State, p: Next, o?: Observation): Outcome<strin
       artifact = e.type === "start" ? contractText(u) : unitDetails(u, o);
     else if (i && s.whole === "explore") {
       const changed =
-        e.type === "critique" && e.text !== undefined && e.text !== currentRevision(i)?.text;
+        e.type === "critique" && e.text !== undefined && e.text !== focusedRevision(s)?.text;
+      const focused = focusedRevision(s);
       const saved =
-        changed && e.type === "critique"
-          ? i.revisions.findLast((r) => !r.confirmed && r.text === e.text)
-          : currentRevision(i);
+        e.type === "critique" && e.text !== undefined
+          ? currentRevision(i)?.text === e.text
+            ? currentRevision(i)
+            : newerDraft(i, e.text)
+          : focused;
       const discussion = (revision: number | null) =>
         `未撤回の懸念（根拠・条件付き）:\n${
           concerns(i, revision)
@@ -195,7 +217,7 @@ export function exactArtifact(s: State, p: Next, o?: Observation): Outcome<strin
             .map((r) => `[${r.author}] ${r.text}`)
             .join("\n\n") || "記録なし"
         }`;
-      artifact = `論点: ${i.text}\n\n検討対象の正確な案:\n${e.type === "critique" && e.text !== undefined ? e.text : (currentRevision(i)?.text ?? "まだなし")}\n\n今回の検討対象への記録:\n${saved ? discussion(saved.revision) : "まだ記録なし（正しさの保証ではありません）"}${changed ? `\n\n以前の案への記録（今回の案へ自動継承しません。履歴は保持）:\n${discussion(i.currentRevision)}` : ""}`;
+      artifact = `論点: ${i.text}\n\n検討対象の正確な案:\n${e.type === "critique" && e.text !== undefined ? e.text : (focused?.text ?? "まだなし")}\n\n今回の検討対象への記録:\n${saved ? discussion(saved.revision) : "まだ記録なし（正しさの保証ではありません）"}${changed ? `\n\n以前の案への記録（今回の案へ自動継承しません。履歴は保持）:\n${discussion(focused?.revision ?? null)}` : ""}`;
     } else
       artifact = `目標: ${s.goal || "未設定"}\n制約: ${s.constraints || "未設定"}\n\n${s.issues
         .map(
@@ -211,10 +233,16 @@ export function exactArtifact(s: State, p: Next, o?: Observation): Outcome<strin
         )}\n\n${s.units.map((u) => `${unitRevision(u)?.contract.title ?? "未確認の範囲"}: ${unitJudgment(u, o)?.decision ?? "現在の受け入れなし"} / ${evidenceFreshness(u, o)}`).join("\n")}`;
     const origin =
       e.type === "critique" && i
-        ? `変更前の検討対象 r${i.currentRevision ?? "—"}:\n${currentRevision(i)?.text ?? "まだなし"}\n\n`
+        ? `変更前の検討対象 r${discussionView(s).focus?.revision ?? "—"}:\n${focusedRevision(s)?.text ?? "まだなし"}\n\n`
+        : "";
+    const targets =
+      e.type === "hypothesis" || e.type === "critique"
+        ? `同じ相談に保持する対象（モードは相談全体で共有）:\n${discussionView(s)
+            .targets.map((t) => `#${t.issueId} r${t.revision ?? "—"}`)
+            .join(" / ")}\n\n`
         : "";
     return ok(
-      `${origin}${p.summary}\n\n未解決・留保:\n${p.unresolved || "追加の記載なし（解決済みの保証ではありません）"}\n\n${artifact}${"note" in e ? `\n\n今回記録する理由・留保（AI整理、選択により本人判断）:\n${e.note || "追記なし"}` : ""}`,
+      `${origin}${targets}${p.summary}\n\n未解決・留保:\n${p.unresolved || "追加の記載なし（解決済みの保証ではありません）"}\n\n${artifact}${"note" in e ? `\n\n今回記録する理由・留保（AI整理、選択により本人判断）:\n${e.note || "追記なし"}` : ""}`,
     );
   });
 }

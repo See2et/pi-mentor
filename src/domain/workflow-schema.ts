@@ -12,7 +12,7 @@ export const EdgeSchema = Type.Unsafe<Edge>(
     object({ type: Type.Literal("goals"), goal: text, constraints: note }),
     object({ type: Type.Literal("issue"), text, issueId: Type.Optional(id) }),
     object({ type: Type.Literal("critique"), text: Type.Optional(text) }),
-    ...["decide", "inspect", "review", "finish", "revisitGoals"].map((type) =>
+    ...["hypothesis", "decide", "inspect", "review", "finish", "revisitGoals"].map((type) =>
       object({ type: Type.Literal(type) }),
     ),
     ...["adopt", "revise", "design", "correct", "defer", "accept"].map((type) =>
@@ -29,7 +29,7 @@ export type Edge =
   | { type: "goals"; goal: string; constraints: string }
   | { type: "issue"; text: string; issueId?: number }
   | { type: "critique"; text?: string }
-  | { type: "decide" | "inspect" | "review" | "finish" | "revisitGoals" }
+  | { type: "hypothesis" | "decide" | "inspect" | "review" | "finish" | "revisitGoals" }
   | { type: "adopt" | "revise" | "design" | "correct" | "defer" | "accept"; note: string }
   | { type: "scope"; contract: Contract }
   | { type: "start"; contract?: Contract }
