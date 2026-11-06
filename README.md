@@ -60,9 +60,13 @@ AI の記録操作と相談整理は別です。相談整理で動けるのは�
 
 ワークフローの改善を考えるときは、[`src/domain/design.ts`](src/domain/design.ts)（設計の検討・版ごとの記録）、[`work-unit.ts`](src/domain/work-unit.ts)（契約・証拠・本人判断）、[`workflow.ts`](src/domain/workflow.ts)（遷移と権限）、[`approval.ts`](src/domain/approval.ts)（候補・承認の鮮度）と、対応する [`tests/domain/`](tests/domain/) から確認できます。表示・プロンプトは `src/presentation/`、保存の復元は `src/persistence.ts`、Pi との接続は `src/extension.ts` に分けています。
 
+依存管理には pnpm 11.25.0、開発ツールの実行には Bun 1.3.13 以降を使います。Pi の実行には引き続き Node 24 が必要です。
+
 ```sh
-npm ci
-npm run check
+pnpm install --frozen-lockfile
+pnpm check
 ```
 
-`check` は型検査、依存方向の検査、直接 `throw` の検査、Vitest を実行します。個別には `npm run typecheck` / `npm run architecture` / `npm run lint` / `npm test` を使えます。
+`check` は型検査、依存方向の検査、直接 `throw` の検査、Vitest を実行します。個別には `pnpm typecheck` / `pnpm architecture` / `pnpm lint` / `pnpm test` を使えます。
+
+`pnpm install` で Git フックも設定されます。コミット前に staged のコードだけを Oxfmt → Oxlint の順で処理し、失敗時はコミットを止めます。JSON・Markdown・YAML は Oxfmt のみ実行します。整形結果はコミット対象に反映され、部分ステージングしたファイルの未ステージ変更は保持されます。全体を手動で整形・確認する場合は `pnpm format` / `pnpm format:check` を使えます。

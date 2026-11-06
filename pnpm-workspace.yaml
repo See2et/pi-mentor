@@ -1,0 +1,10 @@
+allowBuilds:
+  "@google/genai": false
+  esbuild: true
+  protobufjs: false
+overrides:
+  "@earendil-works/pi-agent-core": 1.0.4
+  "@earendil-works/pi-ai": 1.0.4
+  "@earendil-works/pi-codemode": 1.0.4
+  "@earendil-works/pi-mcp": 1.0.4
+  "@earendil-works/chord": 1.0.4
